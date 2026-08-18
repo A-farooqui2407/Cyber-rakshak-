@@ -1,0 +1,6 @@
+{
+  "name": "CyberRakshak - SOC-in-a-Box",
+  "description": "Affordable, lightweight Security Operations Center (SOC) platform for real-time security log monitoring, threat detection, attack correlation, deterministic risk scoring, and AI threat analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
