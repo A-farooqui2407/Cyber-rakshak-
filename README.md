@@ -1,429 +1,130 @@
-# Cyber-rakshak-CyberRakshak
+# CyberRakshak — Affordable AI SOC-in-a-Box
 
-> **Affordable SOC-in-a-Box for small organizations**
+**CyberRakshak** is an open, full-stack Security Operations Center (SOC) platform engineered to give SMBs and enterprises real-time security log monitoring, multi-signal correlation, deterministic risk scoring (0–100), automated incident escalation, and contextual AI threat analysis powered by Google Gemini 3.7 Flash.
 
-CyberRakshak is a cybersecurity monitoring platform designed for colleges, SMEs, small hospitals, and other organizations that may not have a dedicated Security Operations Center (SOC) or security team.
+---
 
-It collects security logs, detects suspicious activity using rule-based detection and event correlation, assigns a risk score, and uses an LLM to explain incidents and suggest response actions.
+## 🌟 Key Features
 
+1. **Deterministic Correlation Engine (0–100 Risk Scoring)**
+   - Rule 1: Brute Force Authentication Detection ($\ge 5$ failed logins within 5 min $\rightarrow$ +25 risk points).
+   - Rule 2: Multi-Stage Account Takeover (Immediate valid login after brute force $\rightarrow$ +45 risk points).
+   - Rule 3: Malicious Ingress / Tor IP Reputation Match ($\rightarrow$ +20 risk points).
+   - Rule 4: Immediate Post-Breach Privilege Escalation (Sudo/IAM elevation $\rightarrow$ +30 risk points).
+   - Multi-signal correlation triggers a **CRITICAL** Alert (Risk Score: 95/100) and automatically escalates into an Incident.
 
+2. **AI SOC Threat Copilot (Gemini 3.7 Flash + Fallback)**
+   - Contextual threat summarization, attack intent explanation, business impact forecasting, and forensic investigation checklists.
+   - Built-in deterministic fallback ensuring 100% uptime even if API quotas or keys are absent.
 
-1. Problem Statement
+3. **Interactive Multi-Stage Attack Simulator**
+   - 10-step visual pipeline execution simulating high-velocity brute force, successful breach, anomalous IP, and privilege escalation with instant telemetry ingestion.
 
-Small organizations often lack dedicated cybersecurity teams and cannot afford complex enterprise SOC/SIEM solutions.
+4. **Multi-Role RBAC (Role-Based Access Control)**
+   - `ADMIN`: Full authority (rules, simulations, incident management, export).
+   - `ANALYST`: Triage alerts, update statuses, execute AI forensic queries, manage containment checklists.
+   - `VIEWER`: Read-only compliance auditor access (restricted from state modifications).
 
-As a result, security events such as:
+5. **SIEM Telemetry & Audit Logs**
+   - Live streaming log table with search, severity filters, and raw JSON payload inspection.
+   - Immutable audit logging tracking all analyst triage decisions for compliance.
 
-	●	Brute-force login attempts
-	●	Suspicious logins
-	●	Port scanning
-	●	Privilege escalation
-	●	Suspicious processes
+---
 
-may go unnoticed or be detected too late.
+## 🚀 Quick Start Guide
 
-CyberRakshak aims to provide a simpler and more affordable security monitoring layer for these organizations.
+### Prerequisites
+- Node.js 20+ / 22+
+- npm or yarn
 
+### 1. Installation
+```bash
+# Clone or extract the repository
+git clone https://github.com/your-username/cyberrakshak-soc.git
+cd cyberrakshak-soc
 
-
-2. Proposed Solution
-
-CyberRakshak follows this flow:
-
-```text
-Windows / Linux / Security Logs
-            ↓
-       Log Collector
-            ↓
-          FastAPI
-            ↓
-     Detection Engine
-            ↓
-    Risk Score + Alert
-            ↓
-        Supabase
-            ↓
-      AI Explanation
-            ↓
-     React SOC Dashboard
+# Install all dependencies
+npm install
 ```
 
-The detection engine is responsible for identifying suspicious behavior. The LLM is used primarily to explain detected incidents and provide human-readable recommendations rather than being the sole detection mechanism.
+### 2. Environment Variables
+Create a `.env` file from `.env.example`:
+```bash
+cp .env.example .env
+```
+Populate optional keys:
+```env
+GEMINI_API_KEY="your-gemini-api-key"
+PORT=3000
+BACKEND_PORT=8000
+```
+*(Note: If `GEMINI_API_KEY` is not provided, CyberRakshak automatically uses its deterministic expert-system fallback).*
 
+### 3. Running in Development
+```bash
+npm run dev
+```
+Open your browser at `http://localhost:3000`.
 
+### 4. Building for Production
+```bash
+# Compiles React SPA with Vite and bundles server with esbuild
+npm run build
 
-3. Key Features
-
-MVP
-
-	●	Security log ingestion
-	●	Rule-based threat detection
-	●	Event correlation
-	●	Risk scoring
-	●	Alert management
-	●	Incident management
-	●	SOC-style dashboard
-	●	AI-assisted incident explanation
-
-Initial Threat Detections
-
-	1.	Brute-force login attempts
-	2.	Possible account compromise
-	3.	Port scanning
-	4.	Privilege escalation
-	5.	Suspicious process activity
-
-Future
-
-	●	Windows event collector
-	●	Linux log collector
-	●	Threat intelligence integration
-	●	More detection rules
-	●	Anomaly detection
-	●	Controlled automated response
-
-
-
-4. Technology Stack
-
-|Layer           |Technology                            |
-|----------------|--------------------------------------|
-|Frontend        |React + Vite + Tailwind CSS           |
-|Backend         |Python + FastAPI                      |
-|Database        |Supabase PostgreSQL                   |
-|Authentication  |Supabase Auth                         |
-|Detection       |Python rule engine + event correlation|
-|AI              |LLM API                               |
-|Containerization|Docker                                |
-|Log Collection  |Python agent                          |
-|Version Control |Git + GitHub                          |
-
-
-
-5. System Architecture
-
-```text
-                 ORGANIZATION
-                      │
-          ┌───────────┴───────────┐
-          ↓                       ↓
-    Windows Machine          Linux Machine
-          │                       │
-          └───────────┬───────────┘
-                      ↓
-                Log Collector
-                      ↓
-                   FastAPI
-                      ↓
-             Detection Engine
-                      ↓
-              Risk / Alert Engine
-                      ↓
-                Supabase DB
-                      ↓
-             ┌────────┴────────┐
-             ↓                 ↓
-         React UI          LLM API
-             │                 │
-             └────────┬────────┘
-                      ↓
-                Admin Dashboard
+# Start production server
+npm start
 ```
 
+---
 
+## 🐳 Docker Deployment
 
-6. How Detection Works
-
-Example: Brute Force
-
-```text
-Failed Login
-Failed Login
-Failed Login
-...
-10+ failures
-within a short time window
-        ↓
-Brute Force Detected
-        ↓
-Risk Score: HIGH
+### Run with Docker Compose
+```bash
+docker-compose up --build -d
 ```
-
-Example: Possible Account Compromise
-
-```text
-Multiple Failed Logins
-        +
-Successful Login
-        +
-Same Source
-        ↓
-Possible Account Compromise
-```
-
-The detection engine can produce a structured incident such as:
-
-```json
-{
-  "threat_type": "BRUTE_FORCE",
-  "severity": "HIGH",
-  "risk_score": 85,
-  "source_ip": "10.20.1.5",
-  "reason": "Multiple failed login attempts from the same source"
-}
-```
-
-
-
-7. API Layer
-
-Initial API design:
-
-```text
-POST /api/logs
-GET  /api/logs
-GET  /api/alerts
-GET  /api/incidents
-GET  /api/dashboard
-POST /api/incidents/{id}/acknowledge
-POST /api/analyze
-```
-
-FastAPI responsibilities:
-
-	1.	Receive logs
-	2.	Validate input
-	3.	Normalize events
-	4.	Store events
-	5.	Trigger detection
-	6.	Return alerts/incidents
-
-
-
-8. Database
-
-Initial tables:
-
-```text
-users
-organizations
-log_sources
-logs
-alerts
-incidents
-detection_rules
-```
-
-Important security requirements:
-
-	●	Supabase Row Level Security
-	●	Organization-level data isolation
-	●	Authenticated access
-	●	Server-side authorization
-	●	Pagination and query limits
-	●	Input validation
-
-
-
-9. AI Security Analyst
-
-The LLM receives structured incident information instead of unrestricted raw system access.
-
-Example input:
-
-```text
-Attack: Possible Account Compromise
-Failed Attempts: 47
-Successful Login: 1
-Source IP: X
-Time Window: 3 minutes
-```
-
-Expected output:
-
-```text
-What happened?
-47 failed authentication attempts were followed by a successful login.
-Risk:
-High
-Recommended actions:
-1. Investigate the account.
-2. Reset credentials if compromise is suspected.
-3. Review recent login activity.
-4. Investigate the source IP.
-```
-
-The AI layer should assist analysts and explain incidents; it should not be treated as the only security detection mechanism.
-
-
-
-10. Development Phases
-
-Phase 0 — Setup
-
-	●	React/Vite/Tailwind
-	●	FastAPI
-	●	Supabase
-	●	Docker
-	●	GitHub
-
-Phase 1 — Database & Auth
-
-	●	Schema
-	●	Authentication
-	●	RLS
-	●	Organization isolation
-
-Phase 2 — Simulated Log Collector
-
-	●	Generate/read security events
-	●	Send events to FastAPI
-	●	Validate and store logs
-
-Phase 3 — Backend
-
-	●	API endpoints
-	●	Validation
-	●	Log processing
-	●	Database integration
-
-Phase 4 — Detection Engine
-
-Implement:
-
-	●	Brute force
-	●	Account compromise
-	●	Port scan
-	●	Privilege escalation
-	●	Suspicious process
-
-Phase 5 — Risk & Alerts
-
-	●	Severity
-	●	Risk score
-	●	Alert creation
-	●	Incident creation
-
-Phase 6 — Dashboard
-
-	●	Live alerts
-	●	Incident list
-	●	Threat timeline
-	●	Risk distribution
-	●	Incident details
-
-Phase 7 — AI
-
-	●	Incident explanation
-	●	Summary
-	●	Recommended actions
-
-Phase 8 — Real Log Collection
-
-	●	Windows Event Logs
-	●	Linux auth/system logs
-
-Phase 9 — Threat Intelligence
-
-	●	IP reputation
-	●	Domain/hash intelligence where applicable
-
-Phase 10 — Deployment & Security
-
-	●	Docker
-	●	Rate limiting
-	●	Input validation
-	●	Secure secrets
-	●	Monitoring
-	●	Production hardening
-
-
-
-11. SIH MVP Scope
-
-Must Have
-
-		React dashboard
-		FastAPI backend
-		Supabase database
-		Log ingestion
-		Five detection rules
-		Risk scoring
-		Alerts
-		Incident details
-		AI explanation
-
-Good to Have
-
-		Windows collector
-		Linux collector
-		Threat intelligence
-		Real-time dashboard updates
-		Incident timeline
-
-Not Required for Initial MVP
-
-	●	Full enterprise SIEM
-	●	50+ attack detections
-	●	Complex ML model
-	●	Automatic destructive response
-	●	Kubernetes/distributed infrastructure
-
-
-
-12. Demo Scenario
-
-A recommended SIH demo:
-
-	1.	Start CyberRakshak dashboard.
-	2.	Generate multiple failed login events.
-	3.	Generate a successful login from the same source.
-	4.	Log Collector sends events to FastAPI.
-	5.	Detection Engine correlates the events.
-	6.	System creates a HIGH-risk incident.
-	7.	Dashboard updates with the alert.
-	8.	LLM generates a clear explanation and recommended actions.
-	9.	Administrator acknowledges the incident.
-
-This demonstrates the complete pipeline:
-
-```text
-Attack Simulation
-      ↓
-Log Collection
-      ↓
-API
-      ↓
-Detection
-      ↓
-Risk Score
-      ↓
-Alert
-      ↓
-AI Explanation
-      ↓
-Dashboard
-```
-
-
-
-13. Future Scope
-
-	●	Multi-organization SaaS architecture
-	●	Advanced anomaly detection
-	●	MITRE ATT&CK mapping
-	●	Threat intelligence correlation
-	●	Controlled response automation
-	●	Email/Slack/SMS alerting
-	●	Endpoint isolation integrations
-	●	More operating systems and security sources
-
-
-
-14. Project Goal
-
-CyberRakshak aims to make essential security monitoring more accessible to organizations that cannot maintain a dedicated SOC.
-
-Tagline:
-
-> Detect early. Understand clearly. Respond faster.
+Access the SOC console at `http://localhost:3000` (or `http://localhost:8000` for backend API).
+
+---
+
+## 📦 How to Download & Push to GitHub
+
+1. In the AI Studio top navigation or settings menu, click **Export / Download ZIP** (or use the GitHub export button).
+2. Extract the downloaded `.zip` file on your local machine.
+3. Initialize Git and push to your GitHub repository:
+   ```bash
+   cd cyberrakshak-soc
+   git init
+   git add .
+   git commit -m "Initial commit: CyberRakshak full-stack SOC platform"
+   git branch -M main
+   git remote add origin https://github.com/<your-username>/cyberrakshak-soc.git
+   git push -u origin main
+   ```
+
+---
+
+## 🛡️ API Endpoints Summary
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/health` | Service health status |
+| `GET` | `/api/dashboard` | Aggregated SOC metrics, chart series, and active alert counts |
+| `GET` | `/api/logs` | Query SIEM telemetry with filtering & pagination |
+| `POST` | `/api/logs` | Ingest new security log event |
+| `GET` | `/api/alerts` | Retrieve security alerts |
+| `PATCH` | `/api/alerts/:id` | Update alert triage status (`NEW`, `INVESTIGATING`, `RESOLVED`, `FALSE_POSITIVE`) |
+| `GET` | `/api/incidents` | List formal incidents queue |
+| `POST` | `/api/incidents` | Escalate new security incident ticket |
+| `PATCH` | `/api/incidents/:id` | Update incident status and assigned analyst |
+| `POST` | `/api/detection/analyze` | Run deterministic correlation engine on log arrays |
+| `GET` | `/api/risk/summary` | Quantitative risk posture and factor breakdown |
+| `POST` | `/api/ai/analyze` | Contextual threat analysis with Gemini 3.7 Flash |
+| `POST` | `/api/ai/investigate` | Natural language SOC copilot inquiry |
+| `POST` | `/api/demo/simulate-attack` | Launch 10-step multi-stage attack simulation |
+| `GET` | `/api/audit-logs` | Retrieve compliance analyst audit trail |
+
+---
+
+## 📄 License
+MIT License. Built for proactive cyber defense.
