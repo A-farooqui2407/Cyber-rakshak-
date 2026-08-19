@@ -1,76 +1,48 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import { UserRole, UserProfile } from "../types";
+import { api } from "../services/api";
 
 interface AuthContextType {
   user: UserProfile | null;
   isAuthenticated: boolean;
   role: UserRole;
   organization: string;
-  login: (role?: UserRole) => void;
+  login: (email: string, password: string) => Promise<void>;
   logout: () => void;
-  switchRole: (newRole: UserRole) => void;
-  switchOrganization: (newOrg: string) => void;
   canPerformAction: (requiredRole: UserRole) => boolean;
 }
-
-const DEFAULT_USERS: Record<UserRole, UserProfile> = {
-  ADMIN: {
-    id: "22222222-2222-2222-2222-222222222221",
-    name: "Rahul Sharma",
-    email: "rahul.sharma@lexguard.com",
-    role: "ADMIN",
-    organization: "LexGuard Law Associates",
-  },
-  ANALYST: {
-    id: "22222222-2222-2222-2222-222222222222",
-    name: "Ananya Patel",
-    email: "ananya.p@lexguard.com",
-    role: "ANALYST",
-    organization: "LexGuard Law Associates",
-  },
-  VIEWER: {
-    id: "22222222-2222-2222-2222-222222222223",
-    name: "Vikram Singh",
-    email: "vikram.s@lexguard.com",
-    role: "VIEWER",
-    organization: "LexGuard Law Associates",
-  },
-};
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<UserProfile | null>(() => {
-    const savedRole = localStorage.getItem("cyberrakshak_role") as UserRole;
-    return DEFAULT_USERS[savedRole] || DEFAULT_USERS.ADMIN;
-  });
-
-  const [organization, setOrganization] = useState<string>("LexGuard Law Associates");
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (user) {
-      localStorage.setItem("cyberrakshak_role", user.role);
+    const token = localStorage.getItem("cyberrakshak_token");
+    if (!token) {
+      setReady(true);
+      return;
     }
-  }, [user]);
+    api
+      .me()
+      .then((res) => setUser(res.user))
+      .catch(() => {
+        localStorage.removeItem("cyberrakshak_token");
+        setUser(null);
+      })
+      .finally(() => setReady(true));
+  }, []);
 
-  const login = (role: UserRole = "ADMIN") => {
-    setUser(DEFAULT_USERS[role]);
+  const login = async (email: string, password: string) => {
+    const res = await api.login(email, password);
+    localStorage.setItem("cyberrakshak_token", res.token);
+    setUser(res.user);
   };
 
   const logout = () => {
     setUser(null);
-    localStorage.removeItem("cyberrakshak_role");
-  };
-
-  const switchRole = (newRole: UserRole) => {
-    setUser(DEFAULT_USERS[newRole]);
-  };
-
-  const switchOrganization = (newOrg: string) => {
-    setOrganization(newOrg);
-    if (user) {
-      setUser({ ...user, organization: newOrg });
-    }
+    localStorage.removeItem("cyberrakshak_token");
   };
 
   const canPerformAction = (requiredRole: UserRole): boolean => {
@@ -81,17 +53,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return false;
   };
 
+  if (!ready) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400 text-sm font-mono">
+        Restoring SOC session…
+      </div>
+    );
+  }
+
   return (
     <AuthContext.Provider
       value={{
         user,
         isAuthenticated: !!user,
         role: user ? user.role : "VIEWER",
-        organization,
+        organization: user?.organization || "LexGuard Law Associates",
         login,
         logout,
-        switchRole,
-        switchOrganization,
         canPerformAction,
       }}
     >

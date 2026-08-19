@@ -1,12 +1,18 @@
 import express, { Request, Response } from "express";
 import path from "path";
 import dotenv from "dotenv";
+import { randomUUID } from "crypto";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
+import { requireAuth, signToken, verifyPassword } from "./server/auth";
+import { defaultChecklistLabels, runDetectionEngine } from "./server/detection";
+import { createStore } from "./server/store";
+import { Alert, DEMO_ORG_ID, DetectionResult, Incident, LogEvent } from "./server/types";
 
 dotenv.config();
 
-// Initialize Google GenAI on the server side with free Gemini API key support
+const store = createStore();
+
 let aiClient: GoogleGenAI | null = null;
 function getAIClient(): GoogleGenAI | null {
   const apiKey =
@@ -14,340 +20,16 @@ function getAIClient(): GoogleGenAI | null {
     process.env.GOOGLE_API_KEY ||
     process.env.API_KEY ||
     process.env.LLM_API_KEY;
-
   if (!aiClient && apiKey) {
-    aiClient = new GoogleGenAI({
-      apiKey: apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
+    aiClient = new GoogleGenAI({ apiKey });
   }
   return aiClient;
 }
 
-// ----------------- INTERFACES & TYPES -----------------
-export interface LogEvent {
-  id: string;
-  organization_id: string;
-  timestamp: string;
-  source: string;
-  username: string;
-  ip_address: string;
-  event_type: string;
-  action: string;
-  status: string;
-  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | "INFO";
-  metadata: Record<string, any>;
+function orgId(req: Request): string {
+  return req.user?.organization_id || DEMO_ORG_ID;
 }
 
-export interface Alert {
-  id: string;
-  organization_id: string;
-  title: string;
-  description: string;
-  threat_type: string;
-  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-  risk_score: number;
-  source_ip: string;
-  username: string;
-  detection_rule: string;
-  reasons: string[];
-  recommended_actions: string[];
-  related_event_ids: string[];
-  status: "NEW" | "INVESTIGATING" | "RESOLVED" | "FALSE_POSITIVE";
-  created_at: string;
-  updated_at: string;
-}
-
-export interface Incident {
-  id: string;
-  organization_id: string;
-  alert_id: string;
-  title: string;
-  description: string;
-  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-  risk_score: number;
-  status: "OPEN" | "INVESTIGATING" | "RESOLVED";
-  affected_user: string;
-  source_ip: string;
-  assigned_analyst: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface DetectionResult {
-  detected: boolean;
-  threat_type: string;
-  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-  risk_score: number;
-  reasons: string[];
-  related_event_ids: string[];
-  affected_user: string;
-  source_ip: string;
-  recommended_actions: string[];
-  detection_rule: string;
-  mitre_attack?: {
-    tactic: string;
-    technique: string;
-  };
-}
-
-// ----------------- IN-MEMORY STATE FOR LIVE SOC -----------------
-const DEMO_ORG_ID = "11111111-1111-1111-1111-111111111111";
-const KNOWN_SUSPICIOUS_IPS = new Set([
-  "198.51.100.42",
-  "203.0.113.195",
-  "185.220.101.5",
-  "45.154.255.89",
-  "194.26.29.112",
-  "103.251.167.20",
-]);
-
-let logsDB: LogEvent[] = [];
-let alertsDB: Alert[] = [];
-let incidentsDB: Incident[] = [];
-let auditLogsDB: Array<{
-  id: string;
-  actor_email: string;
-  action: string;
-  resource_type: string;
-  resource_id: string;
-  metadata?: any;
-  created_at: string;
-}> = [];
-
-// Seed baseline logs for LexGuard Law Associates
-function seedInitialStore() {
-  if (logsDB.length > 0) return;
-
-  const now = new Date();
-  const baselineUsers = ["ananya.p", "vikram.s", "rahul.sharma", "sysadmin_backup", "priya.k"];
-  const baselineIPs = ["10.0.4.15", "10.0.4.22", "192.168.1.105", "10.0.8.99"];
-
-  for (let i = 0; i < 28; i++) {
-    const timeOffset = (30 - i) * 8 * 60 * 1000;
-    const logTime = new Date(now.getTime() - timeOffset).toISOString();
-    const user = baselineUsers[i % baselineUsers.length];
-    const ip = baselineIPs[i % baselineIPs.length];
-
-    logsDB.push({
-      id: `log_seed_${i + 1}`,
-      organization_id: DEMO_ORG_ID,
-      timestamp: logTime,
-      source: i % 3 === 0 ? "vpn_gateway" : (i % 3 === 1 ? "auth_service" : "internal_file_server"),
-      username: user,
-      ip_address: ip,
-      event_type: i % 5 === 0 ? "FILE_ACCESS" : "LOGIN_SUCCESS",
-      action: i % 5 === 0 ? "document_read" : "vpn_authenticate",
-      status: "SUCCESS",
-      severity: "INFO",
-      metadata: {
-        device: "Corp-Device-Secure",
-        mfa_verified: true,
-        protocol: "TLSv1.3",
-      },
-    });
-  }
-
-  // Pre-seed an initial low/medium alert so dashboard has context
-  const sampleAlertId = "alert_seed_001";
-  alertsDB.push({
-    id: sampleAlertId,
-    organization_id: DEMO_ORG_ID,
-    title: "Unusual Off-Hours File Access",
-    description: "Multiple document reads recorded outside standard operating hours.",
-    threat_type: "SENSITIVE_DATA_ACCESS",
-    severity: "LOW",
-    risk_score: 20,
-    source_ip: "10.0.8.99",
-    username: "vikram.s",
-    detection_rule: "OFF_HOURS_DATA_ACCESS",
-    reasons: ["Access occurred at 02:45 UTC outside standard 08:00-18:00 window"],
-    recommended_actions: ["Review access policy compliance with department manager"],
-    related_event_ids: ["log_seed_1", "log_seed_5"],
-    status: "INVESTIGATING",
-    created_at: new Date(now.getTime() - 2 * 3600 * 1000).toISOString(),
-    updated_at: new Date(now.getTime() - 1 * 3600 * 1000).toISOString(),
-  });
-}
-
-seedInitialStore();
-
-// ----------------- DETECTION & RISK SCORING ENGINE -----------------
-function runDetectionEngine(events: LogEvent[]): DetectionResult {
-  if (!events || events.length === 0) {
-    return {
-      detected: false,
-      threat_type: "NORMAL_ACTIVITY",
-      severity: "LOW",
-      risk_score: 5,
-      reasons: ["No abnormal activity found across evaluated logs."],
-      related_event_ids: [],
-      affected_user: "none",
-      source_ip: "0.0.0.0",
-      recommended_actions: ["Maintain standard perimeter monitoring."],
-      detection_rule: "BASELINE_SECURITY_CHECK",
-    };
-  }
-
-  const failedLogins = events.filter((e) => e.event_type === "LOGIN_FAILED");
-  const successLogins = events.filter((e) => e.event_type === "LOGIN_SUCCESS");
-  const privEscEvents = events.filter(
-    (e) =>
-      e.event_type === "PRIVILEGE_ESCALATION" ||
-      (e.action && e.action.toLowerCase().includes("sudo")) ||
-      (e.action && e.action.toLowerCase().includes("role_elevate")) ||
-      (e.action && e.action.toLowerCase().includes("admin") && e.metadata?.prior_role === "VIEWER")
-  );
-  const suspiciousIPEvents = events.filter(
-    (e) => KNOWN_SUSPICIOUS_IPS.has(e.ip_address) || e.event_type === "SUSPICIOUS_IP" || e.metadata?.is_anomalous_ip
-  );
-  const sensitiveAccessEvents = events.filter(
-    (e) =>
-      (e.event_type === "FILE_ACCESS" || e.event_type === "DATABASE_ACCESS") &&
-      (e.metadata?.is_confidential || e.action?.toLowerCase().includes("confidential") || e.action?.toLowerCase().includes("export"))
-  );
-
-  const hasRepeatedFailedLogins = failedLogins.length >= 5;
-  const hasSuccessfulLoginAfterFailures = failedLogins.length >= 3 && successLogins.length > 0;
-  const hasSuspiciousIP = suspiciousIPEvents.length > 0;
-  const hasPrivilegeEscalation = privEscEvents.length > 0;
-  const hasSensitiveDataAccess = sensitiveAccessEvents.length > 0;
-
-  // Deterministic Risk Scoring Formula
-  let score = 0;
-  if (hasRepeatedFailedLogins) score += 25;
-  if (hasSuccessfulLoginAfterFailures) score += 20;
-  if (hasSuspiciousIP) score += 20;
-  if (hasPrivilegeEscalation) score += 30;
-  if (hasSensitiveDataAccess) score += 20;
-  score = Math.min(100, score);
-
-  let severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" = "LOW";
-  if (score >= 80) severity = "CRITICAL";
-  else if (score >= 60) severity = "HIGH";
-  else if (score >= 30) severity = "MEDIUM";
-
-  const targetUser = events.find((e) => e.username !== "anonymous")?.username || "Rahul Sharma";
-  const targetIP = events.find((e) => KNOWN_SUSPICIOUS_IPS.has(e.ip_address))?.ip_address || events[0].ip_address;
-  const relatedIds = events.map((e) => e.id);
-
-  // Multi-stage Account Compromise Correlation
-  if ((hasRepeatedFailedLogins || hasSuccessfulLoginAfterFailures) && hasPrivilegeEscalation) {
-    return {
-      detected: true,
-      threat_type: "POTENTIAL_ACCOUNT_COMPROMISE",
-      severity: severity,
-      risk_score: score, // Exactly calculated (e.g. 25+20+20+30 = 95)
-      reasons: [
-        `High volume of failed authentication attempts (${failedLogins.length} events)`,
-        `Successful logon immediately verified following brute-force attempts`,
-        `Originates from flagged anomalous external IP address (${targetIP})`,
-        `Unauthorized privilege escalation executed to acquire administrative access`,
-      ],
-      related_event_ids: relatedIds,
-      affected_user: targetUser,
-      source_ip: targetIP,
-      recommended_actions: [
-        "Terminate active sessions immediately across all identity providers",
-        "Force emergency password reset and mandate hardware-token MFA",
-        `Add firewall DROP rule for suspicious IP ${targetIP}`,
-        "Audit IAM access logs for unauthorized policy modifications",
-        "Examine endpoint telemetry for persistence mechanisms",
-      ],
-      detection_rule: "MULTI_STAGE_ACCOUNT_COMPROMISE",
-      mitre_attack: {
-        tactic: "Initial Access & Privilege Escalation",
-        technique: "T1110 (Brute Force) + T1078 (Valid Accounts) + T1068 (Privilege Escalation)",
-      },
-    };
-  }
-
-  if (hasPrivilegeEscalation) {
-    return {
-      detected: true,
-      threat_type: "PRIVILEGE_ESCALATION",
-      severity: severity,
-      risk_score: score,
-      reasons: ["Unauthorized role elevation attempt detected on internal core subsystem"],
-      related_event_ids: relatedIds,
-      affected_user: targetUser,
-      source_ip: targetIP,
-      recommended_actions: [
-        "Review administrative command logs",
-        "Revoke temporary access tokens",
-        "Confirm authorization with system owner",
-      ],
-      detection_rule: "UNAUTHORIZED_PRIVILEGE_ESCALATION",
-      mitre_attack: {
-        tactic: "Privilege Escalation",
-        technique: "T1068 (Exploitation for Privilege Escalation)",
-      },
-    };
-  }
-
-  if (hasRepeatedFailedLogins && hasSuccessfulLoginAfterFailures) {
-    return {
-      detected: true,
-      threat_type: "SUSPICIOUS_LOGIN",
-      severity: severity,
-      risk_score: score,
-      reasons: ["Authentication success preceded by rapid burst of failed login attempts"],
-      related_event_ids: relatedIds,
-      affected_user: targetUser,
-      source_ip: targetIP,
-      recommended_actions: [
-        "Verify login validity with user via out-of-band channel",
-        "Enable adaptive location-based challenge verification",
-      ],
-      detection_rule: "SUSPICIOUS_AUTHENTICATION_SEQUENCE",
-      mitre_attack: {
-        tactic: "Credential Access",
-        technique: "T1110.001 (Password Guessing)",
-      },
-    };
-  }
-
-  if (hasRepeatedFailedLogins) {
-    return {
-      detected: true,
-      threat_type: "BRUTE_FORCE",
-      severity: severity,
-      risk_score: score,
-      reasons: [`Detected ${failedLogins.length} failed login attempts in compact time window`],
-      related_event_ids: relatedIds,
-      affected_user: targetUser,
-      source_ip: targetIP,
-      recommended_actions: [
-        "Temporarily throttle authentication requests for targeted username",
-        "Check IP reputation against global threat feeds",
-      ],
-      detection_rule: "REPEATED_LOGIN_FAILURES",
-      mitre_attack: {
-        tactic: "Credential Access",
-        technique: "T1110 (Brute Force)",
-      },
-    };
-  }
-
-  return {
-    detected: false,
-    threat_type: "NORMAL_ACTIVITY",
-    severity: "LOW",
-    risk_score: score || 10,
-    reasons: ["Activity patterns remain within standard variance thresholds"],
-    related_event_ids: relatedIds,
-    affected_user: targetUser,
-    source_ip: targetIP,
-    recommended_actions: ["Routine SOC monitoring."],
-    detection_rule: "BASELINE_SECURITY_CHECK",
-  };
-}
-
-// ----------------- DETERMINISTIC AI FALLBACK -----------------
 function getDeterministicAIFallback(data: any) {
   const user = data.affected_user || "Rahul Sharma";
   const ip = data.source_ip || "198.51.100.42";
@@ -355,172 +37,263 @@ function getDeterministicAIFallback(data: any) {
   const score = data.risk_score || 95;
   const severity = data.severity || "CRITICAL";
 
-  if (threat.includes("ACCOUNT_COMPROMISE") || score >= 80) {
+  if (String(threat).includes("ACCOUNT_COMPROMISE") || score >= 80) {
     return {
-      summary: `Critical multi-stage account takeover detected for account '${user}'. An adversary executed a 20-attempt brute-force sequence from IP ${ip}, validated credentials, and immediately escalated administrative privileges.`,
+      summary: `Critical multi-stage account takeover detected for account '${user}'. An adversary executed a brute-force sequence from IP ${ip}, validated credentials, and immediately escalated administrative privileges.`,
       threat_type: threat,
-      severity: severity,
+      severity,
       risk_score: score,
       why_suspicious: [
-        `High velocity of 20 authentication failures followed by immediate valid login represents systematic credential guessing.`,
-        `Source IP ${ip} is an unverified external node with no prior history in LexGuard Law Associates records.`,
-        `Privilege escalation triggered within 60 seconds of login is an unequivocal indicator of post-exploitation activity.`,
+        "High velocity of authentication failures followed by immediate valid login represents systematic credential guessing.",
+        `Source IP ${ip} is an unverified external node with no prior history in this tenant.`,
+        "Privilege escalation triggered within the correlation window is a high-confidence post-exploitation indicator.",
       ],
       possible_impact: [
-        "Complete unauthorized control over internal enterprise legal records and customer case files.",
+        "Unauthorized control over internal records and customer case files.",
         "Elevation to Super Admin granting ability to generate rogue API keys and disable logging.",
-        "Potential lateral movement across the internal 10.0.0.0/16 private subnet.",
+        "Potential lateral movement across the internal network.",
       ],
       recommended_actions: [
-        "Quarantine account: revoke active session tokens and terminate identity provider sessions immediately.",
-        "Initiate out-of-band password reset requiring hardware security key registration.",
-        `Apply edge firewall DROP rule for remote IP address ${ip}.`,
-        "Audit database query logs for confidential case document downloads.",
+        "Quarantine account: revoke active session tokens immediately.",
+        "Initiate out-of-band password reset requiring a hardware security key.",
+        `Apply edge firewall DROP rule for remote IP ${ip}.`,
+        "Audit database query logs for confidential document downloads.",
       ],
       investigation_steps: [
         `Correlate all egress network traffic to ${ip} across proxy logs.`,
-        "Check if user Rahul Sharma was actively travelling or on known company VPN at the event timestamp.",
-        "Review IAM role revision history for any backdoors created during the session.",
+        "Verify whether the user was travelling or on a known company VPN.",
+        "Review IAM role revision history for backdoors created during the session.",
       ],
       confidence: 0.98,
-      disclaimer: "Deterministic Tier-3 SOC Analysis (CyberRakshak Intelligence Engine).",
+      fallback_used: true,
+      disclaimer: "Deterministic Tier-3 SOC Analysis (offline fallback — Gemini key missing or API error).",
     };
   }
 
   return {
     summary: `Security incident detected: ${threat} involving user '${user}' from ${ip} with risk score ${score}/100.`,
     threat_type: threat,
-    severity: severity,
+    severity,
     risk_score: score,
-    why_suspicious: [
-      "Activity pattern significantly exceeds baseline threshold.",
-      "Anomalous telemetry recorded on authentication gateway.",
-    ],
-    possible_impact: [
-      "Potential unauthorized access or policy non-compliance.",
-    ],
-    recommended_actions: [
-      "Review user access logs and verify validity of recent actions.",
-      "Ensure MFA is enforced across all endpoints.",
-    ],
-    investigation_steps: [
-      "Cross-check event with host-based EDR telemetry.",
-    ],
+    why_suspicious: ["Activity pattern significantly exceeds baseline threshold."],
+    possible_impact: ["Potential unauthorized access or policy non-compliance."],
+    recommended_actions: ["Review user access logs and verify validity of recent actions."],
+    investigation_steps: ["Cross-check event with host-based EDR telemetry."],
     confidence: 0.92,
-    disclaimer: "CyberRakshak SOC Analysis.",
+    fallback_used: true,
+    disclaimer: "CyberRakshak SOC Analysis (offline fallback).",
   };
 }
 
-// ----------------- EXPRESS APPLICATION SETUP -----------------
+async function persistDetection(
+  org: string,
+  detection: DetectionResult,
+  actorEmail: string,
+  actorId?: string
+): Promise<{ alert: Alert | null; incident: Incident | null }> {
+  if (!detection.detected || detection.risk_score < 30) {
+    return { alert: null, incident: null };
+  }
+
+  const existing = await store.findOpenAlert(org, detection.affected_user, detection.threat_type);
+  if (existing) {
+    const merged = await store.updateAlert(org, existing.id, {
+      risk_score: Math.max(existing.risk_score, detection.risk_score),
+      severity: detection.severity,
+      reasons: detection.reasons,
+      related_event_ids: [...new Set([...(existing.related_event_ids || []), ...detection.related_event_ids])],
+    });
+    let incident: Incident | null = await store.findOpenIncidentForAlert(org, existing.id);
+    if (!incident && detection.risk_score >= 80) {
+      incident = await createIncidentFromAlert(merged || existing, actorEmail);
+    }
+    return { alert: merged || existing, incident };
+  }
+
+  const now = new Date().toISOString();
+  const alert: Alert = {
+    id: randomUUID(),
+    organization_id: org,
+    title: `${detection.threat_type.replace(/_/g, " ")} — correlated detection`,
+    description: detection.reasons.join(" "),
+    threat_type: detection.threat_type,
+    severity: detection.severity,
+    risk_score: detection.risk_score,
+    source_ip: detection.source_ip,
+    username: detection.affected_user,
+    detection_rule: detection.detection_rule,
+    reasons: detection.reasons,
+    recommended_actions: detection.recommended_actions,
+    related_event_ids: detection.related_event_ids,
+    status: "NEW",
+    created_at: now,
+    updated_at: now,
+  };
+  await store.insertAlert(alert);
+  await store.insertAudit({
+    id: randomUUID(),
+    organization_id: org,
+    actor_user_id: actorId || null,
+    actor_email: actorEmail,
+    action: "ALERT_CREATED",
+    resource_type: "ALERT",
+    resource_id: alert.id,
+    metadata: { threat_type: detection.threat_type, risk_score: detection.risk_score },
+    created_at: now,
+  });
+
+  let incident: Incident | null = null;
+  if (detection.risk_score >= 80) {
+    incident = await createIncidentFromAlert(alert, actorEmail, actorId);
+  }
+  return { alert, incident };
+}
+
+async function createIncidentFromAlert(alert: Alert, actorEmail: string, actorId?: string): Promise<Incident> {
+  const now = new Date().toISOString();
+  const incident: Incident = {
+    id: randomUUID(),
+    organization_id: alert.organization_id,
+    alert_id: alert.id,
+    title: `INC-${new Date().toISOString().slice(2, 7).replace("-", "")}: ${alert.threat_type.replace(/_/g, " ")} on ${alert.username}`,
+    description: alert.description,
+    severity: alert.severity,
+    risk_score: alert.risk_score,
+    status: "OPEN",
+    affected_user: alert.username,
+    source_ip: alert.source_ip,
+    assigned_analyst: "Ananya Patel (Tier-2 SOC)",
+    created_at: now,
+    updated_at: now,
+  };
+  await store.insertIncident(incident, defaultChecklistLabels(alert.source_ip));
+  await store.insertAudit({
+    id: randomUUID(),
+    organization_id: alert.organization_id,
+    actor_user_id: actorId || null,
+    actor_email: actorEmail,
+    action: "INCIDENT_ESCALATED",
+    resource_type: "INCIDENT",
+    resource_id: incident.id,
+    metadata: { alert_id: alert.id },
+    created_at: now,
+  });
+  return incident;
+}
+
+async function correlateIngestedLog(log: LogEvent, actorEmail: string, actorId?: string) {
+  const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const related = await store.recentLogsForCorrelation(log.organization_id, log.username, log.ip_address, since);
+  const rules = await store.listRules();
+  const detection = runDetectionEngine(related.length ? related : [log], rules);
+  return persistDetection(log.organization_id, detection, actorEmail, actorId);
+}
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
+  app.use(express.json({ limit: "2mb" }));
 
-  app.use(express.json());
-
-  // 1. Health check
-  app.get("/health", (req: Request, res: Response) => {
+  app.get("/health", async (_req, res) => {
     res.json({
       status: "ok",
       service: "CyberRakshak API",
-      version: "1.0.0",
+      version: "1.1.0",
+      store: store.usingSupabase ? "supabase" : "memory",
       detection_engine: "online",
-      organization: "LexGuard Law Associates",
     });
   });
-
-  app.get("/api/health", (req: Request, res: Response) => {
+  app.get("/api/health", async (_req, res) => {
     res.json({
       status: "ok",
       service: "CyberRakshak API",
-      version: "1.0.0",
+      version: "1.1.0",
+      store: store.usingSupabase ? "supabase" : "memory",
     });
   });
 
-  // 2. Dashboard metrics
-  app.get("/api/dashboard", (req: Request, res: Response) => {
-    const totalEvents = logsDB.length;
-    const criticalAlerts = alertsDB.filter((a) => a.severity === "CRITICAL" && a.status !== "RESOLVED").length;
-    const activeIncidents = incidentsDB.filter((inc) => inc.status !== "RESOLVED").length;
-    const highRiskEvents = logsDB.filter((l) => l.severity === "CRITICAL" || l.severity === "HIGH").length;
-
-    let overallRiskScore = 18;
-    if (alertsDB.length > 0) {
-      overallRiskScore = Math.max(...alertsDB.map((a) => a.risk_score));
+  app.post("/api/auth/login", async (req: Request, res: Response) => {
+    const email = String(req.body?.email || "").trim();
+    const password = String(req.body?.password || "");
+    const user = await store.getUserByEmail(email);
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      return res.status(401).json({ error: "Invalid email or password" });
     }
+    const token = signToken({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      organization: user.organization,
+      organization_id: user.organization_id,
+    });
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        organization: user.organization,
+      },
+    });
+  });
 
-    const severityCounts: Record<string, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
-    for (const a of alertsDB) {
-      if (severityCounts[a.severity] !== undefined) {
-        severityCounts[a.severity]++;
+  app.get("/api/auth/me", requireAuth(), (req, res) => {
+    res.json({ user: req.user });
+  });
+
+  app.get("/api/dashboard", requireAuth(), async (req, res) => {
+    const org = orgId(req);
+    const logs = await store.listLogs(org, { limit: 5000 });
+    const alerts = await store.listAlerts(org);
+    const incidents = await store.listIncidents(org);
+    const series = await store.hourlySeries(org);
+    const criticalAlerts = alerts.filter((a) => a.severity === "CRITICAL" && a.status !== "RESOLVED").length;
+    const activeIncidents = incidents.filter((inc) => inc.status !== "RESOLVED").length;
+    const highRiskEvents = logs.logs.filter((l) => l.severity === "CRITICAL" || l.severity === "HIGH").length;
+    const overallRiskScore = alerts.length > 0 ? Math.max(...alerts.map((a) => a.risk_score)) : 18;
+    const severityCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+    for (const a of alerts) {
+      if (severityCounts[a.severity as keyof typeof severityCounts] !== undefined) {
+        severityCounts[a.severity as keyof typeof severityCounts]++;
       }
     }
-
     const eventsByType: Record<string, number> = {};
-    for (const l of logsDB) {
-      eventsByType[l.event_type] = (eventsByType[l.event_type] || 0) + 1;
-    }
-
+    for (const l of logs.logs) eventsByType[l.event_type] = (eventsByType[l.event_type] || 0) + 1;
     res.json({
-      total_events: totalEvents,
+      total_events: logs.total,
       critical_alerts: criticalAlerts,
       active_incidents: activeIncidents,
       high_risk_events: highRiskEvents,
       overall_risk_score: overallRiskScore,
-      events_last_24h: totalEvents,
-      alerts_last_24h: alertsDB.length,
+      events_last_24h: logs.total,
+      alerts_last_24h: alerts.length,
       alerts_by_severity: severityCounts,
       events_by_type: eventsByType,
-      recent_alerts: alertsDB.slice(-6).reverse(),
+      recent_alerts: alerts.slice(0, 6),
+      series,
     });
   });
 
-  // 3. Logs endpoints
-  app.get("/api/logs", (req: Request, res: Response) => {
+  app.get("/api/logs", requireAuth(), async (req, res) => {
     const { search, severity, event_type, username, ip, limit = 50, offset = 0 } = req.query;
-    let filtered = [...logsDB];
-
-    if (search && typeof search === "string") {
-      const s = search.toLowerCase();
-      filtered = filtered.filter(
-        (l) =>
-          l.username.toLowerCase().includes(s) ||
-          l.ip_address.includes(s) ||
-          l.event_type.toLowerCase().includes(s) ||
-          l.action.toLowerCase().includes(s)
-      );
-    }
-    if (severity && typeof severity === "string") {
-      filtered = filtered.filter((l) => l.severity.toUpperCase() === severity.toUpperCase());
-    }
-    if (event_type && typeof event_type === "string") {
-      filtered = filtered.filter((l) => l.event_type.toUpperCase() === event_type.toUpperCase());
-    }
-    if (username && typeof username === "string") {
-      filtered = filtered.filter((l) => l.username.toLowerCase() === username.toLowerCase());
-    }
-    if (ip && typeof ip === "string") {
-      filtered = filtered.filter((l) => l.ip_address === ip);
-    }
-
-    // Newest logs first
-    filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-    const numLimit = Number(limit);
-    const numOffset = Number(offset);
-
-    res.json({
-      total: filtered.length,
-      limit: numLimit,
-      offset: numOffset,
-      logs: filtered.slice(numOffset, numOffset + numLimit),
+    const result = await store.listLogs(orgId(req), {
+      search: typeof search === "string" ? search : undefined,
+      severity: typeof severity === "string" ? severity : undefined,
+      event_type: typeof event_type === "string" ? event_type : undefined,
+      username: typeof username === "string" ? username : undefined,
+      ip: typeof ip === "string" ? ip : undefined,
+      limit: Number(limit),
+      offset: Number(offset),
     });
+    res.json(result);
   });
 
-  app.post("/api/logs", (req: Request, res: Response) => {
+  app.post("/api/logs", requireAuth(["ANALYST"]), async (req, res) => {
     const newLog: LogEvent = {
-      id: req.body.id || `log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      organization_id: req.body.organization_id || DEMO_ORG_ID,
+      id: req.body.id || randomUUID(),
+      organization_id: orgId(req),
       timestamp: req.body.timestamp || new Date().toISOString(),
       source: req.body.source || "api_ingest",
       username: req.body.username || "anonymous",
@@ -531,81 +304,79 @@ async function startServer() {
       severity: req.body.severity || "INFO",
       metadata: req.body.metadata || {},
     };
-
-    logsDB.push(newLog);
-    res.status(201).json(newLog);
+    const saved = await store.insertLog(newLog);
+    const correlated = await correlateIngestedLog(saved, req.user!.email, req.user!.id);
+    res.status(201).json({ ...saved, detection: correlated });
   });
 
-  app.get("/api/logs/:id", (req: Request, res: Response) => {
-    const found = logsDB.find((l) => l.id === req.params.id);
+  app.get("/api/logs/:id", requireAuth(), async (req, res) => {
+    const found = await store.getLog(orgId(req), req.params.id);
     if (!found) return res.status(404).json({ error: "Log not found" });
     res.json(found);
   });
 
-  // 4. Alerts endpoints
-  app.get("/api/alerts", (req: Request, res: Response) => {
+  app.get("/api/alerts", requireAuth(), async (req, res) => {
     const { status, severity } = req.query;
-    let filtered = [...alertsDB];
-    if (status && typeof status === "string") {
-      filtered = filtered.filter((a) => a.status.toUpperCase() === status.toUpperCase());
-    }
-    if (severity && typeof severity === "string") {
-      filtered = filtered.filter((a) => a.severity.toUpperCase() === severity.toUpperCase());
-    }
-    filtered.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    res.json(filtered);
+    const rows = await store.listAlerts(orgId(req), {
+      status: typeof status === "string" ? status : undefined,
+      severity: typeof severity === "string" ? severity : undefined,
+    });
+    res.json(rows);
   });
 
-  app.get("/api/alerts/:id", (req: Request, res: Response) => {
-    const alert = alertsDB.find((a) => a.id === req.params.id);
+  app.get("/api/alerts/:id", requireAuth(), async (req, res) => {
+    const alert = await store.getAlert(orgId(req), req.params.id);
     if (!alert) return res.status(404).json({ error: "Alert not found" });
     res.json(alert);
   });
 
-  app.patch("/api/alerts/:id", (req: Request, res: Response) => {
-    const alert = alertsDB.find((a) => a.id === req.params.id);
+  app.patch("/api/alerts/:id", requireAuth(["ANALYST"]), async (req, res) => {
+    const alert = await store.updateAlert(orgId(req), req.params.id, {
+      status: req.body.status,
+    });
     if (!alert) return res.status(404).json({ error: "Alert not found" });
-
-    if (req.body.status) {
-      alert.status = req.body.status;
-    }
-    alert.updated_at = new Date().toISOString();
-
-    auditLogsDB.push({
-      id: `audit_${Date.now()}`,
-      actor_email: req.body.actor_email || "rahul.sharma@lexguard.com",
+    await store.insertAudit({
+      id: randomUUID(),
+      organization_id: orgId(req),
+      actor_user_id: req.user!.id,
+      actor_email: req.user!.email,
       action: "ALERT_STATUS_CHANGED",
       resource_type: "ALERT",
       resource_id: alert.id,
       metadata: { new_status: alert.status },
       created_at: new Date().toISOString(),
     });
-
     res.json(alert);
   });
 
-  // 5. Incidents endpoints
-  app.get("/api/incidents", (req: Request, res: Response) => {
+  app.post("/api/alerts/:id/escalate", requireAuth(["ANALYST"]), async (req, res) => {
+    const alert = await store.getAlert(orgId(req), req.params.id);
+    if (!alert) return res.status(404).json({ error: "Alert not found" });
+    const existing = await store.findOpenIncidentForAlert(orgId(req), alert.id);
+    if (existing) return res.json(existing);
+    const incident = await createIncidentFromAlert(alert, req.user!.email, req.user!.id);
+    res.status(201).json(incident);
+  });
+
+  app.get("/api/incidents", requireAuth(), async (req, res) => {
     const { status } = req.query;
-    let filtered = [...incidentsDB];
-    if (status && typeof status === "string") {
-      filtered = filtered.filter((inc) => inc.status.toUpperCase() === status.toUpperCase());
-    }
-    filtered.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    res.json(filtered);
+    const rows = await store.listIncidents(orgId(req), typeof status === "string" ? status : undefined);
+    res.json(rows);
   });
 
-  app.get("/api/incidents/:id", (req: Request, res: Response) => {
-    const incident = incidentsDB.find((inc) => inc.id === req.params.id);
+  app.get("/api/incidents/:id", requireAuth(), async (req, res) => {
+    const incident = await store.getIncident(orgId(req), req.params.id);
     if (!incident) return res.status(404).json({ error: "Incident not found" });
-    res.json(incident);
+    const checklist = await store.listChecklist(incident.id);
+    res.json({ ...incident, checklist });
   });
 
-  app.post("/api/incidents", (req: Request, res: Response) => {
+  app.post("/api/incidents", requireAuth(["ANALYST"]), async (req, res) => {
+    const now = new Date().toISOString();
     const newInc: Incident = {
-      id: `inc_${Date.now()}`,
-      organization_id: req.body.organization_id || DEMO_ORG_ID,
-      alert_id: req.body.alert_id || "",
+      id: randomUUID(),
+      organization_id: orgId(req),
+      alert_id: req.body.alert_id || undefined,
       title: req.body.title || "Manual Security Incident",
       description: req.body.description || "Escalated by SOC Analyst",
       severity: req.body.severity || "MEDIUM",
@@ -613,120 +384,141 @@ async function startServer() {
       status: "OPEN",
       affected_user: req.body.affected_user || "Unknown",
       source_ip: req.body.source_ip || "10.0.0.1",
-      assigned_analyst: req.body.assigned_analyst || "Ananya Patel (Tier-2 SOC)",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      assigned_analyst: req.body.assigned_analyst || req.user!.name,
+      created_at: now,
+      updated_at: now,
     };
-    incidentsDB.push(newInc);
+    await store.insertIncident(newInc, defaultChecklistLabels(newInc.source_ip));
     res.status(201).json(newInc);
   });
 
-  app.patch("/api/incidents/:id", (req: Request, res: Response) => {
-    const incident = incidentsDB.find((inc) => inc.id === req.params.id);
+  app.patch("/api/incidents/:id", requireAuth(["ANALYST"]), async (req, res) => {
+    const incident = await store.updateIncident(orgId(req), req.params.id, {
+      status: req.body.status,
+      assigned_analyst: req.body.assigned_analyst,
+    });
     if (!incident) return res.status(404).json({ error: "Incident not found" });
-
-    if (req.body.status) incident.status = req.body.status;
-    if (req.body.assigned_analyst) incident.assigned_analyst = req.body.assigned_analyst;
-    incident.updated_at = new Date().toISOString();
-
-    auditLogsDB.push({
-      id: `audit_${Date.now()}`,
-      actor_email: req.body.actor_email || "rahul.sharma@lexguard.com",
+    await store.insertAudit({
+      id: randomUUID(),
+      organization_id: orgId(req),
+      actor_user_id: req.user!.id,
+      actor_email: req.user!.email,
       action: "INCIDENT_STATUS_CHANGED",
       resource_type: "INCIDENT",
       resource_id: incident.id,
       metadata: { new_status: incident.status },
       created_at: new Date().toISOString(),
     });
-
     res.json(incident);
   });
 
-  // 6. Detection & Risk Analysis endpoints
-  app.post("/api/detection/analyze", (req: Request, res: Response) => {
-    const events = req.body.events || [];
-    const result = runDetectionEngine(events);
-    res.json(result);
+  app.get("/api/incidents/:id/checklist", requireAuth(), async (req, res) => {
+    res.json(await store.listChecklist(req.params.id));
   });
 
-  app.get("/api/risk/summary", (req: Request, res: Response) => {
-    const highestScore = alertsDB.length > 0 ? Math.max(...alertsDB.map((a) => a.risk_score)) : 18;
+  app.patch("/api/checklist/:id", requireAuth(["ANALYST"]), async (req, res) => {
+    const item = await store.updateChecklistItem(req.params.id, Boolean(req.body.completed));
+    if (!item) return res.status(404).json({ error: "Checklist item not found" });
+    res.json(item);
+  });
+
+  app.post("/api/detection/analyze", requireAuth(["ANALYST"]), async (req, res) => {
+    const events = req.body.events || req.body || [];
+    const rules = await store.listRules();
+    res.json(runDetectionEngine(events, rules));
+  });
+
+  app.get("/api/detection/rules", requireAuth(), async (_req, res) => {
+    res.json(await store.listRules());
+  });
+
+  app.patch("/api/detection/rules/:id", requireAuth(["ADMIN"]), async (req, res) => {
+    const rule = await store.updateRule(req.params.id, {
+      weight: req.body.weight,
+      enabled: req.body.enabled,
+      condition: req.body.condition,
+      description: req.body.description,
+    });
+    if (!rule) return res.status(404).json({ error: "Rule not found" });
+    await store.insertAudit({
+      id: randomUUID(),
+      organization_id: orgId(req),
+      actor_user_id: req.user!.id,
+      actor_email: req.user!.email,
+      action: "DETECTION_RULE_UPDATED",
+      resource_type: "RULE",
+      resource_id: rule.id,
+      metadata: req.body,
+      created_at: new Date().toISOString(),
+    });
+    res.json(rule);
+  });
+
+  app.get("/api/risk/summary", requireAuth(), async (req, res) => {
+    const alerts = await store.listAlerts(orgId(req));
+    const rules = await store.listRules();
+    const highestScore = alerts.length > 0 ? Math.max(...alerts.map((a) => a.risk_score)) : 18;
     let severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" = "LOW";
     if (highestScore >= 80) severity = "CRITICAL";
     else if (highestScore >= 60) severity = "HIGH";
     else if (highestScore >= 30) severity = "MEDIUM";
-
+    const weight = (id: string, fallback: number) => rules.find((r) => r.id === id)?.weight ?? fallback;
     res.json({
       overall_risk_score: highestScore,
-      severity: severity,
+      severity,
       risk_factors: [
         {
           factor: "Repeated Failed Logins",
-          weight: 25,
-          active: alertsDB.some((a) => a.reasons.some((r) => r.toLowerCase().includes("failed"))),
+          weight: weight("RULE-BF-001", 25),
+          active: alerts.some((a) => a.reasons.some((r) => r.toLowerCase().includes("failed"))),
           description: "High rate of authentication failures indicative of brute force",
         },
         {
-          factor: "Privilege Escalation Attempts",
-          weight: 30,
-          active: alertsDB.some((a) => a.reasons.some((r) => r.toLowerCase().includes("privilege"))),
-          description: "Adversary attempting administrative takeover",
+          factor: "Successful Login After Failures",
+          weight: weight("RULE-ATO-002", 20),
+          active: alerts.some((a) => a.reasons.some((r) => r.toLowerCase().includes("successful"))),
+          description: "Valid login immediately after brute-force attempts",
         },
         {
           factor: "Suspicious External IP Exposure",
-          weight: 20,
-          active: alertsDB.some((a) => a.reasons.some((r) => r.toLowerCase().includes("ip"))),
+          weight: weight("RULE-IP-003", 20),
+          active: alerts.some((a) => a.reasons.some((r) => r.toLowerCase().includes("ip"))),
           description: "Connection originated from unverified remote node",
         },
         {
-          factor: "Credential Guessing Sequences",
-          weight: 20,
-          active: alertsDB.some((a) => a.reasons.some((r) => r.toLowerCase().includes("successful"))),
-          description: "Successful login followed consecutive failures",
+          factor: "Privilege Escalation Attempts",
+          weight: weight("RULE-PRIV-004", 30),
+          active: alerts.some((a) => a.reasons.some((r) => r.toLowerCase().includes("privilege"))),
+          description: "Adversary attempting administrative takeover",
         },
       ],
-      top_risk_entities: [
-        {
-          user: "Rahul Sharma (Admin)",
-          risk: highestScore,
-          ip: "198.51.100.42",
-          threat_type: alertsDB[0]?.threat_type || "POTENTIAL_ACCOUNT_COMPROMISE",
-        },
-      ],
+      top_risk_entities: alerts.slice(0, 5).map((a) => ({
+        user: a.username,
+        risk: a.risk_score,
+        ip: a.source_ip,
+        threat_type: a.threat_type,
+      })),
     });
   });
 
-  // 7. AI Threat Analysis
-  app.post("/api/ai/analyze", async (req: Request, res: Response) => {
+  app.post("/api/ai/analyze", requireAuth(["ANALYST"]), async (req, res) => {
     const data = req.body;
     const ai = getAIClient();
-
-    if (!ai) {
-      return res.json(getDeterministicAIFallback(data));
-    }
-
+    if (!ai) return res.json(getDeterministicAIFallback(data));
     try {
       const prompt = `Analyze this security incident detected by CyberRakshak:
 THREAT TYPE: ${data.threat_type || "POTENTIAL_ACCOUNT_COMPROMISE"}
 SEVERITY: ${data.severity || "CRITICAL"}
 DETERMINISTIC RISK SCORE: ${data.risk_score || 95}/100
-AFFECTED USER: ${data.affected_user || "Rahul Sharma"}
-SOURCE IP: ${data.source_ip || "198.51.100.42"}
+AFFECTED USER: ${data.affected_user || "unknown"}
+SOURCE IP: ${data.source_ip || "unknown"}
 DETECTION REASONS:
 ${(data.reasons || []).map((r: string) => "- " + r).join("\n")}
 
-Respond with JSON adhering to this schema:
-{
-  "summary": "Executive summary of the attack",
-  "why_suspicious": ["Reason 1", "Reason 2"],
-  "possible_impact": ["Impact 1", "Impact 2"],
-  "recommended_actions": ["Action 1", "Action 2", "Action 3"],
-  "investigation_steps": ["Step 1", "Step 2", "Step 3"],
-  "confidence": 0.98
-}`;
-
+Respond with JSON:
+{"summary":"","why_suspicious":[],"possible_impact":[],"recommended_actions":[],"investigation_steps":[],"confidence":0.98}`;
       const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
+        model: process.env.LLM_MODEL || "gemini-3.7-flash",
         contents: prompt,
         config: {
           systemInstruction:
@@ -734,7 +526,6 @@ Respond with JSON adhering to this schema:
           responseMimeType: "application/json",
         },
       });
-
       const parsed = JSON.parse(response.text || "{}");
       res.json({
         summary: parsed.summary || "",
@@ -746,6 +537,7 @@ Respond with JSON adhering to this schema:
         recommended_actions: parsed.recommended_actions || [],
         investigation_steps: parsed.investigation_steps || [],
         confidence: parsed.confidence || 0.95,
+        fallback_used: false,
         disclaimer: "AI threat explanation generated by Gemini 3.7 Flash.",
       });
     } catch (err: any) {
@@ -754,69 +546,88 @@ Respond with JSON adhering to this schema:
     }
   });
 
-  app.post("/api/ai/investigate", async (req: Request, res: Response) => {
+  app.post("/api/ai/investigate", requireAuth(["ANALYST"]), async (req, res) => {
     const { query, context } = req.body;
     const ai = getAIClient();
-
     if (!ai) {
       return res.json({
-        answer: `SOC Investigation Report for '${query}': Based on current correlated evidence for LexGuard Law Associates, anomalous IP 198.51.100.42 systematically executed high-entropy password attacks targeting Rahul Sharma's credentials, followed by an immediate administrative privilege escalation. Priority action: Revoke active session tokens and enforce perimeter IP block.`,
-        relevant_indicators: ["198.51.100.42", "Rahul Sharma", "MULTI_STAGE_ACCOUNT_COMPROMISE", "sudo_role_elevate"],
+        answer: `SOC Investigation Report for '${query}': Correlated evidence indicates anomalous authentication and possible privilege abuse. Priority: isolate sessions, reset credentials, and block the source IP.`,
+        relevant_indicators: ["MULTI_STAGE_ACCOUNT_COMPROMISE"],
         suggested_queries: [
-          "Show all active sessions for Rahul Sharma",
-          "What other internal services were queried by 198.51.100.42?",
+          "Show all active sessions for the affected user",
           "List files accessed in the past 60 minutes",
         ],
+        fallback_used: true,
       });
     }
-
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
+        model: process.env.LLM_MODEL || "gemini-3.7-flash",
         contents: `Context: ${context || "LexGuard Law Associates SOC incident queue"}\nAnalyst Question: ${query}`,
         config: {
           systemInstruction:
-            "You are CyberRakshak AI SOC Copilot. Answer analyst questions with precise, actionable forensic guidance, distinguishing fact from possibility.",
+            "You are CyberRakshak AI SOC Copilot. Answer analyst questions with precise, actionable forensic guidance.",
         },
       });
-
       res.json({
         answer: response.text,
-        relevant_indicators: ["198.51.100.42", "Rahul Sharma", "Active Threat Event"],
-        suggested_queries: [
-          "Check perimeter firewall drops",
-          "Verify user active sessions",
-        ],
+        relevant_indicators: ["Active Threat Event"],
+        suggested_queries: ["Check perimeter firewall drops", "Verify user active sessions"],
+        fallback_used: false,
       });
-    } catch (err) {
+    } catch {
       res.json({
-        answer: `Forensic Guidance: Immediate isolation recommended for host associated with '${query}'. Revoke OAuth refresh tokens and check SIEM logs.`,
-        relevant_indicators: ["198.51.100.42"],
+        answer: `Forensic Guidance: Immediate isolation recommended for host associated with '${query}'.`,
+        relevant_indicators: [],
         suggested_queries: ["Show recent administrative audit logs"],
+        fallback_used: true,
       });
     }
   });
 
-  // 8. Audit Logs
-  app.get("/api/audit-logs", (req: Request, res: Response) => {
-    res.json(auditLogsDB.slice(-50).reverse());
+  app.get("/api/audit-logs", requireAuth(), async (req, res) => {
+    res.json(await store.listAudit(orgId(req), 100));
   });
 
-  // 9. Master Security Demo Simulation Endpoint
-  app.post("/api/demo/simulate-attack", (req: Request, res: Response) => {
+  app.get("/api/export", requireAuth(["ADMIN"]), async (req, res) => {
+    const org = orgId(req);
+    const logs = await store.listLogs(org, { limit: 5000 });
+    const alerts = await store.listAlerts(org);
+    const incidents = await store.listIncidents(org);
+    const audit = await store.listAudit(org, 500);
+    await store.insertAudit({
+      id: randomUUID(),
+      organization_id: org,
+      actor_user_id: req.user!.id,
+      actor_email: req.user!.email,
+      action: "SOC_BUNDLE_EXPORTED",
+      resource_type: "EXPORT",
+      resource_id: org,
+      created_at: new Date().toISOString(),
+    });
+    res.json({
+      organization: req.user!.organization,
+      exported_at: new Date().toISOString(),
+      exported_by: req.user!.email,
+      logs: logs.logs,
+      alerts,
+      incidents,
+      audit,
+    });
+  });
+
+  app.post("/api/demo/simulate-attack", requireAuth(["ADMIN"]), async (req, res) => {
     const attackUser = "Rahul Sharma";
     const attackIP = "198.51.100.42";
     const now = new Date();
-
+    const org = orgId(req);
     const attackBatch: LogEvent[] = [];
 
-    // Step 1: 20 Failed Login attempts
     for (let i = 0; i < 20; i++) {
-      const logTime = new Date(now.getTime() - (5 * 60 * 1000) + (i * 4 * 1000)).toISOString();
-      const failLog: LogEvent = {
-        id: `sim_fail_${Date.now()}_${i + 1}`,
-        organization_id: DEMO_ORG_ID,
-        timestamp: logTime,
+      attackBatch.push({
+        id: randomUUID(),
+        organization_id: org,
+        timestamp: new Date(now.getTime() - 5 * 60 * 1000 + i * 4 * 1000).toISOString(),
         source: "auth_service",
         username: attackUser,
         ip_address: attackIP,
@@ -824,21 +635,12 @@ Respond with JSON adhering to this schema:
         action: "login_attempt",
         status: "FAILED",
         severity: "MEDIUM",
-        metadata: {
-          attempt_number: i + 1,
-          failure_reason: "INVALID_CREDENTIALS",
-          user_agent: "Mozilla/5.0 (Kali Linux; x86_64)",
-          geo_city: "Tor Exit Relay 44",
-        },
-      };
-      attackBatch.push(failLog);
-      logsDB.push(failLog);
+        metadata: { attempt_number: i + 1, failure_reason: "INVALID_CREDENTIALS" },
+      });
     }
-
-    // Step 2: 1 Successful Login
-    const successLog: LogEvent = {
-      id: `sim_succ_${Date.now()}`,
-      organization_id: DEMO_ORG_ID,
+    attackBatch.push({
+      id: randomUUID(),
+      organization_id: org,
       timestamp: new Date(now.getTime() - 2 * 60 * 1000).toISOString(),
       source: "auth_service",
       username: attackUser,
@@ -847,19 +649,11 @@ Respond with JSON adhering to this schema:
       action: "user_login",
       status: "SUCCESS",
       severity: "HIGH",
-      metadata: {
-        session_id: "sess_anom_9921",
-        auth_method: "password_only",
-        mfa_bypassed: true,
-      },
-    };
-    attackBatch.push(successLog);
-    logsDB.push(successLog);
-
-    // Step 3: Suspicious IP Telemetry
-    const ipLog: LogEvent = {
-      id: `sim_ip_${Date.now()}`,
-      organization_id: DEMO_ORG_ID,
+      metadata: { session_id: "sess_anom_9921", auth_method: "password_only" },
+    });
+    attackBatch.push({
+      id: randomUUID(),
+      organization_id: org,
       timestamp: new Date(now.getTime() - 90 * 1000).toISOString(),
       source: "waf_perimeter",
       username: attackUser,
@@ -868,19 +662,11 @@ Respond with JSON adhering to this schema:
       action: "threat_intel_match",
       status: "FLAGGED",
       severity: "HIGH",
-      metadata: {
-        is_anomalous_ip: true,
-        threat_score: 94,
-        reputation: "Known Brute-Force Botnet",
-      },
-    };
-    attackBatch.push(ipLog);
-    logsDB.push(ipLog);
-
-    // Step 4: Privilege Escalation
-    const privLog: LogEvent = {
-      id: `sim_priv_${Date.now()}`,
-      organization_id: DEMO_ORG_ID,
+      metadata: { is_anomalous_ip: true, reputation: "Known Brute-Force Botnet" },
+    });
+    attackBatch.push({
+      id: randomUUID(),
+      organization_id: org,
       timestamp: new Date(now.getTime() - 30 * 1000).toISOString(),
       source: "iam_control",
       username: attackUser,
@@ -889,66 +675,22 @@ Respond with JSON adhering to this schema:
       action: "sudo_role_elevate_admin",
       status: "DETECTED",
       severity: "CRITICAL",
-      metadata: {
-        prior_role: "VIEWER",
-        requested_role: "SUPER_ADMIN",
-        resource: "/api/v1/system/crypto_vault",
-      },
-    };
-    attackBatch.push(privLog);
-    logsDB.push(privLog);
+      metadata: { prior_role: "VIEWER", requested_role: "SUPER_ADMIN" },
+    });
 
-    // Step 5: Feed to Detection & Correlation Engine
-    const detectionResult = runDetectionEngine(attackBatch);
+    await store.insertLogs(attackBatch);
+    const rules = await store.listRules();
+    const detectionResult = runDetectionEngine(attackBatch, rules);
+    const { alert, incident } = await persistDetection(org, detectionResult, req.user!.email, req.user!.id);
 
-    // Step 6: Create Critical Alert
-    const alertId = `alert_${Date.now()}`;
-    const newAlert: Alert = {
-      id: alertId,
-      organization_id: DEMO_ORG_ID,
-      title: "🚨 Potential Account Compromise — Multi-Stage Attack",
-      description: `Automated brute force followed by successful logon and unauthorized administrative privilege escalation targeting user '${attackUser}' from malicious IP ${attackIP}.`,
-      threat_type: detectionResult.threat_type,
-      severity: detectionResult.severity,
-      risk_score: detectionResult.risk_score, // 95 CRITICAL
-      source_ip: detectionResult.source_ip,
-      username: detectionResult.affected_user,
-      detection_rule: detectionResult.detection_rule,
-      reasons: detectionResult.reasons,
-      recommended_actions: detectionResult.recommended_actions,
-      related_event_ids: detectionResult.related_event_ids,
-      status: "NEW",
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
-    };
-    alertsDB.unshift(newAlert);
-
-    // Step 7: Create Incident
-    const incidentId = `inc_${Date.now()}`;
-    const newIncident: Incident = {
-      id: incidentId,
-      organization_id: DEMO_ORG_ID,
-      alert_id: alertId,
-      title: `INC-2608-${incidentsDB.length + 101}: Active Account Takeover on ${attackUser}`,
-      description: "Multi-stage attack sequence validated by CyberRakshak correlation engine. Mandatory quarantine & credential reset advised.",
-      severity: detectionResult.severity,
-      risk_score: detectionResult.risk_score,
-      status: "OPEN",
-      affected_user: detectionResult.affected_user,
-      source_ip: detectionResult.source_ip,
-      assigned_analyst: "Ananya Patel (Tier-2 SOC)",
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
-    };
-    incidentsDB.unshift(newIncident);
-
-    // Audit Log
-    auditLogsDB.push({
-      id: `audit_sim_${Date.now()}`,
-      actor_email: "rahul.sharma@lexguard.com",
+    await store.insertAudit({
+      id: randomUUID(),
+      organization_id: org,
+      actor_user_id: req.user!.id,
+      actor_email: req.user!.email,
       action: "DEMO_SIMULATION_STARTED",
       resource_type: "SIMULATION",
-      resource_id: alertId,
+      resource_id: alert?.id || "none",
       metadata: { risk_score: detectionResult.risk_score, threat: detectionResult.threat_type },
       created_at: now.toISOString(),
     });
@@ -959,15 +701,14 @@ Respond with JSON adhering to this schema:
       risk_score: detectionResult.risk_score,
       severity: detectionResult.severity,
       reasons: detectionResult.reasons,
-      alert_id: alertId,
-      incident_id: incidentId,
+      alert_id: alert?.id,
+      incident_id: incident?.id,
       affected_user: detectionResult.affected_user,
       source_ip: detectionResult.source_ip,
       detection_details: detectionResult,
     });
   });
 
-  // 10. Vite Middleware for live preview
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -978,13 +719,17 @@ Respond with JSON adhering to this schema:
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req: Request, res: Response) => {
+      if (req.path.startsWith("/api")) return res.status(404).json({ error: "Not found" });
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🛡️ CyberRakshak SOC Server active on http://0.0.0.0:${PORT}`);
+    console.log(`CyberRakshak SOC Server active on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

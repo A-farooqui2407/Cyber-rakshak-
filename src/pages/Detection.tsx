@@ -13,10 +13,13 @@ import {
   Sparkles,
 } from "lucide-react";
 import { api } from "../services/api";
-import { DetectionResult } from "../types";
+import { DetectionResult, DetectionRule } from "../types";
 import { SeverityBadge } from "../components/ui/Badge";
+import { useAuth } from "../context/AuthContext";
 
 export const Detection: React.FC = () => {
+  const { role, canPerformAction } = useAuth();
+  const [rules, setRules] = useState<DetectionRule[]>([]);
   const [testPayload, setTestPayload] = useState(
     JSON.stringify(
       [
@@ -78,44 +81,14 @@ export const Detection: React.FC = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const rules = [
-    {
-      id: "RULE-BF-001",
-      name: "Brute Force Authentication Pattern",
-      mitre: "T1110.001 - Password Guessing",
-      weight: 25,
-      condition: ">= 5 consecutive LOGIN_FAILED events for same username within 5 min window",
-      description: "Detects automated password spraying and dictionary attacks against user credentials.",
-      status: "ACTIVE",
-    },
-    {
-      id: "RULE-ATO-002",
-      name: "Multi-Signal Account Takeover (ATO)",
-      mitre: "T1078 - Valid Accounts",
-      weight: 45,
-      condition: "LOGIN_SUCCESS immediately following >= 5 LOGIN_FAILED events",
-      description: "High-fidelity indicator that an attacker has guessed or cracked credentials after repeated attempts.",
-      status: "ACTIVE",
-    },
-    {
-      id: "RULE-IP-003",
-      name: "Known Malicious / Tor IP Ingress",
-      mitre: "T1090 - Proxy Network",
-      weight: 20,
-      condition: "Ingress matches known adversary proxy or darknet exit node",
-      description: "Flags remote sessions originating from flagged IPs (e.g. 198.51.100.42, 203.0.113.195).",
-      status: "ACTIVE",
-    },
-    {
-      id: "RULE-PRIV-004",
-      name: "Immediate Post-Breach Privilege Escalation",
-      mitre: "T1548 - Abuse Elevation Control Mechanism",
-      weight: 30,
-      condition: "PRIVILEGE_ESCALATION (sudo/IAM elevation) executed shortly after successful login",
-      description: "Intercepts root privilege requests right after initial entry point.",
-      status: "ACTIVE",
-    },
-  ];
+  React.useEffect(() => {
+    api.getDetectionRules().then(setRules).catch((err) => console.error(err));
+  }, []);
+
+  const saveRule = async (id: string, patch: Partial<DetectionRule>) => {
+    const updated = await api.updateDetectionRule(id, patch);
+    setRules((prev) => prev.map((r) => (r.id === id ? updated : r)));
+  };
 
   const handleRunDetection = async () => {
     setIsRunning(true);
@@ -143,7 +116,7 @@ export const Detection: React.FC = () => {
             <h2 className="text-sm font-bold text-slate-100 flex items-center gap-2">
               Deterministic Detection Engine & Rules
               <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800/50">
-                4 Active Rules • Multi-Signal Correlation
+                {rules.filter((r) => r.enabled).length} Active Rules • Multi-Signal Correlation
               </span>
             </h2>
             <p className="text-xs text-slate-400">
@@ -179,9 +152,32 @@ export const Detection: React.FC = () => {
 
             <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800/60">
               <span className="font-mono text-amber-400">{rule.mitre}</span>
-              <span className="text-emerald-400 flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" /> Active
-              </span>
+              {role === "ADMIN" ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={rule.weight}
+                    onChange={(e) => saveRule(rule.id, { weight: Number(e.target.value) })}
+                    className="w-16 bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[11px] font-mono"
+                  />
+                  <button
+                    onClick={() => saveRule(rule.id, { enabled: !rule.enabled })}
+                    className={`px-2 py-0.5 rounded font-mono text-[10px] border ${
+                      rule.enabled
+                        ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                        : "bg-slate-900 text-slate-400 border-slate-700"
+                    }`}
+                  >
+                    {rule.enabled ? "ENABLED" : "DISABLED"}
+                  </button>
+                </div>
+              ) : (
+                <span className={rule.enabled ? "text-emerald-400 flex items-center gap-1" : "text-slate-500"}>
+                  <CheckCircle2 className="w-3 h-3" /> {rule.enabled ? "Active" : "Disabled"}
+                </span>
+              )}
             </div>
           </div>
         ))}
@@ -202,7 +198,7 @@ export const Detection: React.FC = () => {
 
           <button
             onClick={handleRunDetection}
-            disabled={isRunning}
+            disabled={isRunning || !canPerformAction("ANALYST")}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs transition-all shadow-[0_0_12px_rgba(6,182,212,0.25)]"
           >
             <Play className="w-3.5 h-3.5 fill-white" />

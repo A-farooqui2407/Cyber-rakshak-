@@ -52,6 +52,12 @@ export interface Incident {
   updated_at: string;
 }
 
+export interface HourlyPoint {
+  time: string;
+  events: number;
+  alerts: number;
+}
+
 export interface DashboardMetrics {
   total_events: number;
   critical_alerts: number;
@@ -68,6 +74,7 @@ export interface DashboardMetrics {
   };
   events_by_type: Record<string, number>;
   recent_alerts: Alert[];
+  series?: HourlyPoint[];
 }
 
 export interface RiskFactor {
@@ -106,6 +113,25 @@ export interface DetectionResult {
   };
 }
 
+export interface DetectionRule {
+  id: string;
+  name: string;
+  mitre: string;
+  weight: number;
+  condition: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface ChecklistItem {
+  id: string;
+  incident_id: string;
+  position: number;
+  label: string;
+  completed: boolean;
+  updated_at: string;
+}
+
 export interface AIAnalysisResult {
   summary: string;
   threat_type: string;
@@ -117,6 +143,7 @@ export interface AIAnalysisResult {
   investigation_steps: string[];
   confidence: number;
   disclaimer: string;
+  fallback_used?: boolean;
 }
 
 export interface UserProfile {

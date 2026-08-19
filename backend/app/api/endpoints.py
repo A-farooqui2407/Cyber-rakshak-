@@ -208,6 +208,35 @@ async def update_incident(incident_id: str, payload: Dict[str, Any] = Body(...))
             return inc
     raise HTTPException(status_code=404, detail="Incident not found")
 
+@router.post("/incidents")
+async def create_incident(payload: Dict[str, Any] = Body(...)):
+    now = datetime.utcnow()
+    incident_obj = {
+        "id": str(uuid.uuid4()),
+        "organization_id": DEMO_ORG_ID,
+        "alert_id": payload.get("alert_id"),
+        "title": payload.get("title", "Manual Security Incident"),
+        "description": payload.get("description", "Escalated by SOC Analyst"),
+        "severity": payload.get("severity", "MEDIUM"),
+        "risk_score": payload.get("risk_score", 50),
+        "status": "OPEN",
+        "affected_user": payload.get("affected_user", "Unknown"),
+        "source_ip": payload.get("source_ip", "10.0.0.1"),
+        "assigned_analyst": payload.get("assigned_analyst", "Ananya Patel (Tier-2 SOC)"),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    incidents_db.append(incident_obj)
+    return incident_obj
+
+@router.get("/audit-logs")
+async def get_audit_logs():
+    return sorted(audit_logs_db, key=lambda x: x.get("created_at", ""), reverse=True)[:100]
+
+@router.get("/health")
+async def api_health():
+    return {"status": "ok", "service": "CyberRakshak API", "version": "1.1.0"}
+
 # ----------------- DETECTION & RISK -----------------
 @router.post("/detection/analyze")
 async def analyze_events(events: List[LogEvent]):

@@ -54,7 +54,7 @@ export const Alerts: React.FC<AlertsPageProps> = ({ onSelectAlert }) => {
   ) => {
     e.stopPropagation();
     try {
-      await api.updateAlertStatus(alertId, newStatus, user?.email);
+      await api.updateAlertStatus(alertId, newStatus);
       fetchAlerts();
     } catch (err) {
       console.error("Failed to update alert", err);

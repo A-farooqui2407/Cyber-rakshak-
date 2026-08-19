@@ -20,6 +20,8 @@ import { api } from "./services/api";
 const MainLayout: React.FC = () => {
   const { isAuthenticated, role, user } = useAuth();
   const [currentTab, setCurrentTab] = useState("dashboard");
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [criticalCount, setCriticalCount] = useState(0);
 
   // Drawers & Modals
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
@@ -29,13 +31,26 @@ const MainLayout: React.FC = () => {
   // Refresh key to force re-fetches
   const [refreshKey, setRefreshKey] = useState(0);
 
+  React.useEffect(() => {
+    if (!isAuthenticated) return;
+    api
+      .getDashboard()
+      .then((d) => setCriticalCount(d.critical_alerts || 0))
+      .catch(() => setCriticalCount(0));
+  }, [isAuthenticated, refreshKey]);
+
   if (!isAuthenticated) {
     return <Login />;
   }
 
+  const applySearch = (query: string) => {
+    setGlobalSearch(query);
+    if (query.trim()) setCurrentTab("logs");
+  };
+
   const handleAlertStatusChange = async (id: string, newStatus: string) => {
     try {
-      await api.updateAlertStatus(id, newStatus, user?.email);
+      await api.updateAlertStatus(id, newStatus);
       if (selectedAlert && selectedAlert.id === id) {
         setSelectedAlert({ ...selectedAlert, status: newStatus as any });
       }
@@ -75,7 +90,9 @@ const MainLayout: React.FC = () => {
         {/* Sticky Top Navbar */}
         <Navbar
           onRefresh={() => setRefreshKey((k) => k + 1)}
-          criticalAlertCount={1}
+          onSearch={applySearch}
+          searchValue={globalSearch}
+          criticalAlertCount={criticalCount}
         />
 
         {/* Scrollable View Container */}
@@ -89,7 +106,7 @@ const MainLayout: React.FC = () => {
                 onNavigateTab={(tab) => setCurrentTab(tab)}
               />
             )}
-            {currentTab === "logs" && <LiveLogs key={refreshKey} />}
+            {currentTab === "logs" && <LiveLogs key={refreshKey} initialSearch={globalSearch} />}
             {currentTab === "alerts" && (
               <Alerts
                 key={refreshKey}
@@ -122,6 +139,7 @@ const MainLayout: React.FC = () => {
         alert={selectedAlert}
         onClose={() => setSelectedAlert(null)}
         onStatusChange={handleAlertStatusChange}
+        onEscalated={() => setRefreshKey((k) => k + 1)}
       />
 
       {/* Incident Detail Drawer */}

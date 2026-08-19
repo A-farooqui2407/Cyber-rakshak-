@@ -1,6 +1,20 @@
-version: '3.8'
+version: "3.8"
 
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cyberrakshak-soc
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -8,25 +22,8 @@ services:
     container_name: cyberrakshak-backend
     ports:
       - "8000:8000"
-    environment:
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-gemini-3.7-flash}
-      - LLM_API_BASE_URL=${LLM_API_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+    env_file:
+      - .env
     restart: unless-stopped
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: cyberrakshak-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - VITE_API_URL=http://localhost:8000
-    depends_on:
-      - backend
-    restart: unless-stopped
+    profiles:
+      - fastapi
