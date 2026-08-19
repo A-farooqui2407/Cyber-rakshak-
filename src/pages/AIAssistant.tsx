@@ -12,15 +12,18 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { api } from "../services/api";
+import { useAuth } from "../context/AuthContext";
 
 interface Message {
   sender: "user" | "ai";
   text: string;
   indicators?: string[];
   suggested_queries?: string[];
+  fallback_used?: boolean;
 }
 
 export const AIAssistant: React.FC = () => {
+  const { canPerformAction } = useAuth();
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -38,7 +41,7 @@ export const AIAssistant: React.FC = () => {
 
   const handleSend = async (userPrompt?: string) => {
     const textToSend = userPrompt || query;
-    if (!textToSend.trim() || isLoading) return;
+    if (!textToSend.trim() || isLoading || !canPerformAction("ANALYST")) return;
 
     const newMsgs: Message[] = [...messages, { sender: "user", text: textToSend }];
     setMessages(newMsgs);
@@ -54,6 +57,7 @@ export const AIAssistant: React.FC = () => {
           text: res.answer,
           indicators: res.relevant_indicators,
           suggested_queries: res.suggested_queries,
+          fallback_used: res.fallback_used,
         },
       ]);
     } catch (err: any) {
@@ -110,6 +114,9 @@ export const AIAssistant: React.FC = () => {
                 </div>
               )}
               <div className="whitespace-pre-wrap">{m.text}</div>
+              {m.fallback_used && (
+                <div className="text-[10px] font-mono text-amber-400">Offline fallback — Gemini key not configured or API error.</div>
+              )}
 
               {/* Extracted Indicators */}
               {m.indicators && m.indicators.length > 0 && (
@@ -174,7 +181,7 @@ export const AIAssistant: React.FC = () => {
         />
         <button
           type="submit"
-          disabled={!query.trim() || isLoading}
+          disabled={!query.trim() || isLoading || !canPerformAction("ANALYST")}
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Send className="w-3.5 h-3.5" />

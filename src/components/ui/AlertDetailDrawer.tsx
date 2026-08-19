@@ -22,17 +22,20 @@ interface AlertDetailDrawerProps {
   alert: Alert | null;
   onClose: () => void;
   onStatusChange: (id: string, newStatus: string) => void;
+  onEscalated?: (incidentId: string) => void;
 }
 
 export const AlertDetailDrawer: React.FC<AlertDetailDrawerProps> = ({
   alert,
   onClose,
   onStatusChange,
+  onEscalated,
 }) => {
-  const { role, user } = useAuth();
+  const { role, user, canPerformAction } = useAuth();
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [escalating, setEscalating] = useState(false);
 
   if (!alert) return null;
 
@@ -162,10 +165,10 @@ export const AlertDetailDrawer: React.FC<AlertDetailDrawerProps> = ({
                 </div>
               </div>
 
-              {!aiAnalysis && (
+                  {!aiAnalysis && (
                 <button
                   onClick={handleFetchAIAnalysis}
-                  disabled={isAiLoading}
+                  disabled={isAiLoading || !canPerformAction("ANALYST")}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium transition-all shadow-[0_0_12px_rgba(6,182,212,0.25)] disabled:opacity-50"
                 >
                   {isAiLoading ? (
@@ -242,7 +245,9 @@ export const AlertDetailDrawer: React.FC<AlertDetailDrawerProps> = ({
 
                 <div className="text-[10px] text-slate-400 pt-2 border-t border-slate-800 flex justify-between items-center">
                   <span>Confidence: {(aiAnalysis.confidence * 100).toFixed(0)}%</span>
-                  <span>{aiAnalysis.disclaimer}</span>
+                  <span>
+                    {aiAnalysis.fallback_used ? "Offline fallback engine" : aiAnalysis.disclaimer}
+                  </span>
                 </div>
               </div>
             )}
@@ -273,6 +278,26 @@ export const AlertDetailDrawer: React.FC<AlertDetailDrawerProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {canPerformAction("ANALYST") && (
+              <button
+                disabled={escalating}
+                onClick={async () => {
+                  if (!alert) return;
+                  setEscalating(true);
+                  try {
+                    const incident = await api.escalateAlert(alert.id);
+                    onEscalated?.(incident.id);
+                  } catch (err) {
+                    console.error(err);
+                  } finally {
+                    setEscalating(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 text-xs font-medium text-white"
+              >
+                {escalating ? "Escalating…" : "Escalate to Incident"}
+              </button>
+            )}
             <button
               onClick={onClose}
               className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors"

@@ -107,10 +107,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-3 border-t border-slate-800/80 bg-slate-950/90">
         <button
           onClick={onOpenSimulation}
-          disabled={role === "VIEWER"}
-          title={role === "VIEWER" ? "Viewer accounts cannot run attack simulations (403)" : "Simulate Multi-Stage Attack"}
+          disabled={role !== "ADMIN"}
+          title={role !== "ADMIN" ? "Only ADMIN can run attack simulations" : "Simulate Multi-Stage Attack"}
           className={`w-full relative group overflow-hidden rounded-lg p-3 text-left transition-all border ${
-            role === "VIEWER"
+            role !== "ADMIN"
               ? "opacity-50 cursor-not-allowed bg-slate-900 border-slate-800"
               : "bg-gradient-to-r from-red-950/70 via-orange-950/60 to-red-950/70 hover:from-red-900/80 hover:to-orange-900/80 border-red-700/60 hover:border-red-500/80 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
           }`}

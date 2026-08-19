@@ -1,16 +1,13 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   X,
   AlertOctagon,
   User,
-  Shield,
-  Clock,
-  CheckCircle2,
-  AlertTriangle,
 } from "lucide-react";
-import { Incident } from "../../types";
+import { ChecklistItem, Incident } from "../../types";
 import { SeverityBadge, StatusBadge } from "./Badge";
 import { useAuth } from "../../context/AuthContext";
+import { api } from "../../services/api";
 
 interface IncidentDetailDrawerProps {
   incident: Incident | null;
@@ -23,7 +20,13 @@ export const IncidentDetailDrawer: React.FC<IncidentDetailDrawerProps> = ({
   onClose,
   onStatusChange,
 }) => {
-  const { role } = useAuth();
+  const { role, canPerformAction } = useAuth();
+  const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
+
+  useEffect(() => {
+    if (!incident) return;
+    api.getChecklist(incident.id).then(setChecklist).catch(() => setChecklist([]));
+  }, [incident?.id]);
 
   if (!incident) return null;
 
@@ -92,22 +95,30 @@ export const IncidentDetailDrawer: React.FC<IncidentDetailDrawerProps> = ({
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Incident Response Checklist</div>
             <div className="space-y-2">
-              <label className="flex items-center gap-3 p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-slate-300 cursor-pointer hover:bg-slate-900">
-                <input type="checkbox" defaultChecked className="rounded border-slate-700 text-cyan-500" />
-                <span>1. Isolate compromised user endpoint & terminate active sessions</span>
-              </label>
-              <label className="flex items-center gap-3 p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-slate-300 cursor-pointer hover:bg-slate-900">
-                <input type="checkbox" defaultChecked className="rounded border-slate-700 text-cyan-500" />
-                <span>2. Block adversary IP address 198.51.100.42 at gateway router</span>
-              </label>
-              <label className="flex items-center gap-3 p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-slate-300 cursor-pointer hover:bg-slate-900">
-                <input type="checkbox" className="rounded border-slate-700 text-cyan-500" />
-                <span>3. Invalidate credentials and issue out-of-band MFA secret</span>
-              </label>
-              <label className="flex items-center gap-3 p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-slate-300 cursor-pointer hover:bg-slate-900">
-                <input type="checkbox" className="rounded border-slate-700 text-cyan-500" />
-                <span>4. Complete post-incident forensic log export for compliance</span>
-              </label>
+              {checklist.length > 0 ? (
+                checklist.map((item) => (
+                  <label
+                    key={item.id}
+                    className="flex items-center gap-3 p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-slate-300"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={item.completed}
+                      disabled={!canPerformAction("ANALYST")}
+                      onChange={async (e) => {
+                        const updated = await api.updateChecklistItem(item.id, e.target.checked);
+                        setChecklist((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                      }}
+                      className="rounded border-slate-700 text-cyan-500"
+                    />
+                    <span>
+                      {item.position}. {item.label}
+                    </span>
+                  </label>
+                ))
+              ) : (
+                <div className="text-slate-500 text-[11px]">Checklist will appear after the incident is stored.</div>
+              )}
             </div>
           </div>
 

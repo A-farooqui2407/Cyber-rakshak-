@@ -15,7 +15,7 @@ import { SeverityBadge } from "../components/ui/Badge";
 import { api } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 
-export const LiveLogs: React.FC = () => {
+export const LiveLogs: React.FC<{ initialSearch?: string }> = ({ initialSearch = "" }) => {
   const { role } = useAuth();
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [total, setTotal] = useState(0);
@@ -23,7 +23,7 @@ export const LiveLogs: React.FC = () => {
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   // Filters
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch);
   const [severityFilter, setSeverityFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
 

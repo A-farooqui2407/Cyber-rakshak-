@@ -64,16 +64,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
     return () => clearInterval(interval);
   }, []);
 
-  // Time series mock generation based on real data
-  const timeSeriesData = [
-    { time: "06:00", events: 12, alerts: 0 },
-    { time: "08:00", events: 25, alerts: 1 },
-    { time: "10:00", events: 45, alerts: 0 },
-    { time: "12:00", events: 60, alerts: 1 },
-    { time: "14:00", events: 88, alerts: 2 },
-    { time: "16:00", events: 110, alerts: metrics?.critical_alerts ? 3 : 1 },
-    { time: "Now", events: metrics?.total_events || 135, alerts: metrics?.alerts_last_24h || 2 },
-  ];
+  const timeSeriesData =
+    metrics?.series && metrics.series.length > 0
+      ? metrics.series
+      : [{ time: "Now", events: metrics?.total_events || 0, alerts: metrics?.alerts_last_24h || 0 }];
 
   const severityPieData = [
     { name: "CRITICAL", value: metrics?.alerts_by_severity?.CRITICAL || 0, color: "#ef4444" },
@@ -102,7 +96,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div className="text-sm font-bold text-white flex items-center gap-2">
                 CRITICAL THREAT ACTIVE: Potential Account Compromise
                 <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-red-900 text-red-200 border border-red-500 font-bold">
-                  RISK 95/100
+                  RISK {metrics.overall_risk_score}/100
                 </span>
               </div>
               <p className="text-xs text-red-200/80">

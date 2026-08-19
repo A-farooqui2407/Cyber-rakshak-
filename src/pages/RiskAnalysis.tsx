@@ -34,7 +34,7 @@ export const RiskAnalysis: React.FC = () => {
 
   const formulaFactors = [
     { name: "Brute Force Multiplier", weight: "+25", desc: "Triggered on >= 5 failed logins within 5-min threshold", active: (summary?.overall_risk_score || 0) > 40 },
-    { name: "Credential Breach Factor", weight: "+45", desc: "Triggered on successful login following repeated failures", active: (summary?.overall_risk_score || 0) > 60 },
+    { name: "Credential Breach Factor", weight: "+20", desc: "Triggered on successful login following repeated failures", active: (summary?.overall_risk_score || 0) > 60 },
     { name: "Adversary IP Reputation Match", weight: "+20", desc: "Flagged proxy node or threat intelligence match", active: (summary?.overall_risk_score || 0) > 30 },
     { name: "Privilege Elevation Sudo Abuse", weight: "+30", desc: "Unauthorized admin role change post-authentication", active: (summary?.overall_risk_score || 0) > 70 },
   ];
@@ -135,7 +135,7 @@ export const RiskAnalysis: React.FC = () => {
                   <td className="py-3 font-mono font-bold text-red-400">{ent.risk}/100</td>
                   <td className="py-3 text-right">
                     <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-red-950 text-red-300 border border-red-800">
-                      SESSION RESTRICTED
+                      {(ent.risk || 0) >= 80 ? "CONTAINMENT ADVISED" : "MONITOR"}
                     </span>
                   </td>
                 </tr>

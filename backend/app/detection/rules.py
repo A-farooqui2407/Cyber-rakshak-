@@ -17,14 +17,28 @@ class DetectionRules:
         """
         Rule 1: Detect repeated failed login attempts for same user or IP within time window.
         """
-        failed_logs = [l for l in logs if l.event_type == EVENT_LOGIN_FAILED]
-        if len(failed_logs) >= threshold:
-            return {
-                "triggered": True,
-                "count": len(failed_logs),
-                "reasons": [f"Detected {len(failed_logs)} consecutive failed login attempts (Threshold: {threshold})"],
-                "logs": failed_logs
-            }
+        if not logs:
+            return {"triggered": False, "count": 0, "reasons": [], "logs": []}
+        anchor = max((l.timestamp for l in logs if l.timestamp), default=None)
+        if not anchor:
+            return {"triggered": False, "count": 0, "reasons": [], "logs": []}
+        window = timedelta(minutes=window_minutes)
+        by_key: Dict[str, List[LogEvent]] = {}
+        for l in logs:
+            if l.event_type != EVENT_LOGIN_FAILED:
+                continue
+            if l.timestamp < anchor - window:
+                continue
+            by_key.setdefault(f"user:{l.username.lower()}", []).append(l)
+            by_key.setdefault(f"ip:{l.ip_address}", []).append(l)
+        for _key, group in by_key.items():
+            if len(group) >= threshold:
+                return {
+                    "triggered": True,
+                    "count": len(group),
+                    "reasons": [f"Detected {len(group)} failed login attempts within {window_minutes} minutes (Threshold: {threshold})"],
+                    "logs": group
+                }
         return {"triggered": False, "count": 0, "reasons": [], "logs": []}
 
     @staticmethod

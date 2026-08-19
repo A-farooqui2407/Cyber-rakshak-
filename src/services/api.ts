@@ -7,35 +7,50 @@ import {
   DetectionResult,
   AIAnalysisResult,
   AuditLog,
+  DetectionRule,
+  ChecklistItem,
+  UserProfile,
+  HourlyPoint,
 } from "../types";
 
 const BASE_URL = (import.meta as any).env?.VITE_API_URL || "";
 
-async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${url}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options?.headers || {}),
-    },
-  });
+function token(): string | null {
+  return localStorage.getItem("cyberrakshak_token");
+}
 
+async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((options?.headers as Record<string, string>) || {}),
+  };
+  const t = token();
+  if (t) headers.Authorization = `Bearer ${t}`;
+
+  const res = await fetch(`${BASE_URL}${url}`, { ...options, headers });
+  if (res.status === 401) {
+    localStorage.removeItem("cyberrakshak_token");
+  }
   if (!res.ok) {
     const errBody = await res.text();
     throw new Error(`API error ${res.status}: ${errBody || res.statusText}`);
   }
-
   return res.json();
 }
 
 export const api = {
-  // 1. Health
-  getHealth: () => fetchJSON<{ status: string; service: string }>("/api/health"),
+  login: (email: string, password: string) =>
+    fetchJSON<{ token: string; user: UserProfile }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
 
-  // 2. Dashboard
-  getDashboard: () => fetchJSON<DashboardMetrics>("/api/dashboard"),
+  me: () => fetchJSON<{ user: UserProfile }>("/api/auth/me"),
 
-  // 3. Logs
+  getHealth: () => fetchJSON<{ status: string; service: string; store?: string }>("/api/health"),
+
+  getDashboard: () => fetchJSON<DashboardMetrics & { series?: HourlyPoint[] }>("/api/dashboard"),
+
   getLogs: (params?: {
     search?: string;
     severity?: string;
@@ -53,8 +68,7 @@ export const api = {
     if (params?.ip) query.append("ip", params.ip);
     if (params?.limit) query.append("limit", params.limit.toString());
     if (params?.offset) query.append("offset", params.offset.toString());
-
-    return fetchJSON<{ total: number; limit: number; offset: number; logs: LogEvent[] }>(
+    return fetchJSON<{ total: number; limit?: number; offset?: number; logs: LogEvent[] }>(
       `/api/logs?${query.toString()}`
     );
   },
@@ -62,12 +76,11 @@ export const api = {
   getLogById: (id: string) => fetchJSON<LogEvent>(`/api/logs/${id}`),
 
   createLog: (log: Partial<LogEvent>) =>
-    fetchJSON<LogEvent>("/api/logs", {
+    fetchJSON<LogEvent & { detection?: { alert: Alert | null; incident: Incident | null } }>("/api/logs", {
       method: "POST",
       body: JSON.stringify(log),
     }),
 
-  // 4. Alerts
   getAlerts: (params?: { status?: string; severity?: string }) => {
     const query = new URLSearchParams();
     if (params?.status) query.append("status", params.status);
@@ -77,20 +90,22 @@ export const api = {
 
   getAlertById: (id: string) => fetchJSON<Alert>(`/api/alerts/${id}`),
 
-  updateAlertStatus: (id: string, status: string, actor_email?: string) =>
+  updateAlertStatus: (id: string, status: string) =>
     fetchJSON<Alert>(`/api/alerts/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ status, actor_email }),
+      body: JSON.stringify({ status }),
     }),
 
-  // 5. Incidents
+  escalateAlert: (id: string) =>
+    fetchJSON<Incident>(`/api/alerts/${id}/escalate`, { method: "POST" }),
+
   getIncidents: (params?: { status?: string }) => {
     const query = new URLSearchParams();
     if (params?.status) query.append("status", params.status);
     return fetchJSON<Incident[]>(`/api/incidents?${query.toString()}`);
   },
 
-  getIncidentById: (id: string) => fetchJSON<Incident>(`/api/incidents/${id}`),
+  getIncidentById: (id: string) => fetchJSON<Incident & { checklist?: ChecklistItem[] }>(`/api/incidents/${id}`),
 
   createIncident: (incident: Partial<Incident>) =>
     fetchJSON<Incident>("/api/incidents", {
@@ -104,16 +119,30 @@ export const api = {
       body: JSON.stringify({ status, assigned_analyst }),
     }),
 
-  // 6. Detection & Risk
+  getChecklist: (incidentId: string) => fetchJSON<ChecklistItem[]>(`/api/incidents/${incidentId}/checklist`),
+
+  updateChecklistItem: (id: string, completed: boolean) =>
+    fetchJSON<ChecklistItem>(`/api/checklist/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ completed }),
+    }),
+
   runDetection: (events: LogEvent[]) =>
     fetchJSON<DetectionResult>("/api/detection/analyze", {
       method: "POST",
       body: JSON.stringify({ events }),
     }),
 
+  getDetectionRules: () => fetchJSON<DetectionRule[]>("/api/detection/rules"),
+
+  updateDetectionRule: (id: string, patch: Partial<DetectionRule>) =>
+    fetchJSON<DetectionRule>(`/api/detection/rules/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
   getRiskSummary: () => fetchJSON<RiskSummary>("/api/risk/summary"),
 
-  // 7. AI Threat Analysis
   getAIAnalysis: (data: {
     threat_type: string;
     severity: string;
@@ -128,18 +157,20 @@ export const api = {
     }),
 
   investigateQuery: (query: string, context?: string) =>
-    fetchJSON<{ answer: string; relevant_indicators: string[]; suggested_queries: string[] }>(
-      "/api/ai/investigate",
-      {
-        method: "POST",
-        body: JSON.stringify({ query, context }),
-      }
-    ),
+    fetchJSON<{
+      answer: string;
+      relevant_indicators: string[];
+      suggested_queries: string[];
+      fallback_used?: boolean;
+    }>("/api/ai/investigate", {
+      method: "POST",
+      body: JSON.stringify({ query, context }),
+    }),
 
-  // 8. Audit Logs
   getAuditLogs: () => fetchJSON<AuditLog[]>("/api/audit-logs"),
 
-  // 9. Demo Attack Simulation
+  exportBundle: () => fetchJSON<Record<string, unknown>>("/api/export"),
+
   simulateAttack: () =>
     fetchJSON<{
       attack_simulated: boolean;
@@ -152,7 +183,5 @@ export const api = {
       affected_user: string;
       source_ip: string;
       detection_details: DetectionResult;
-    }>("/api/demo/simulate-attack", {
-      method: "POST",
-    }),
+    }>("/api/demo/simulate-attack", { method: "POST" }),
 };

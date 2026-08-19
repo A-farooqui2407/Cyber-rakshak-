@@ -36,19 +36,7 @@ export const Settings: React.FC = () => {
 
   const handleExportData = async () => {
     try {
-      const logs = await api.getLogs({ limit: 1000 });
-      const alerts = await api.getAlerts();
-      const incidents = await api.getIncidents();
-
-      const exportBundle = {
-        organization,
-        exported_at: new Date().toISOString(),
-        exported_by: user?.email,
-        logs: logs.logs,
-        alerts,
-        incidents,
-      };
-
+      const exportBundle = await api.exportBundle();
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportBundle, null, 2));
       const downloadAnchor = document.createElement("a");
       downloadAnchor.setAttribute("href", dataStr);
@@ -79,7 +67,8 @@ export const Settings: React.FC = () => {
 
         <button
           onClick={handleExportData}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors"
+          disabled={role !== "ADMIN"}
+          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors disabled:opacity-40"
         >
           <Download className="w-4 h-4 text-cyan-400" />
           <span>Export SOC Bundle (.JSON)</span>
